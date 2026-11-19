@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Wifi Call Local — Companion</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app" class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-avatar">W</div>
+        <div>
+          <h1>Wifi Call Local</h1>
+          <p id="host-info" class="subtitle">Connecting to local node…</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="conn-pill" class="pill offline">Disconnected</span>
+        <button id="theme-toggle-btn" class="icon-btn" type="button" title="Toggle Theme">◐</button>
+        <button id="qr-toggle-btn" class="btn-secondary" type="button">QR</button>
+      </div>
+    </header>
+
+    <div id="https-notice-banner" class="https-banner hidden">
+      <span>WebRTC mic/camera capture requires an HTTPS secure context or localhost. Messaging &amp; file sharing work normally over local HTTP.</span>
+    </div>
+
+    <div id="join-modal" class="modal">
+      <div class="modal-card">
+        <div class="modal-brand">Wifi Call Local</div>
+        <h2>Join Local Network</h2>
+        <p class="muted">Enter a display name (2–30 chars). No internet or account required — communicates directly with devices on your local WiFi.</p>
+        <input id="web-name-input" type="text" maxlength="30" placeholder="Display Name" />
+        <button id="join-btn" class="btn-primary" type="button">Continue</button>
+      </div>
+    </div>
+
+    <div id="qr-modal" class="modal hidden">
+      <div class="modal-card">
+        <h3>Share Local URL</h3>
+        <div id="web-qr-canvas" class="qr-box"></div>
+        <p id="web-qr-url" class="muted mono"></p>
+        <button id="qr-close-btn" class="btn-secondary" type="button">Close</button>
+      </div>
+    </div>
+
+    <!-- Image Zoom Lightbox Modal -->
+    <div id="image-modal" class="modal hidden">
+      <div class="image-modal-shell">
+        <div class="image-modal-bar">
+          <div class="image-modal-meta">
+            <strong id="img-modal-title">Image</strong>
+            <span id="img-modal-sub" class="muted"></span>
+          </div>
+          <div class="image-modal-actions">
+            <button id="img-zoom-out" class="btn-secondary" type="button">−</button>
+            <button id="img-zoom-reset" class="btn-secondary" type="button">100%</button>
+            <button id="img-zoom-in" class="btn-secondary" type="button">+</button>
+            <a id="img-modal-download" class="btn-primary" download>Download</a>
+            <button id="img-modal-close" class="btn-secondary" type="button">Close</button>
+          </div>
+        </div>
+        <div class="image-modal-stage" id="img-modal-stage">
+          <img id="img-modal-preview" alt="Preview" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Incoming & Active WebRTC Call Modal -->
+    <div id="call-modal" class="modal hidden">
+      <div class="modal-card call-card">
+        <div class="call-badge" id="call-type-badge">VOICE CALL</div>
+        <div class="call-avatar" id="call-peer-avatar">P</div>
+        <h2 id="call-peer-name">Peer</h2>
+        <p id="call-status-text" class="call-status">Connecting…</p>
+        <p id="call-timer-text" class="call-timer">00:00</p>
+
+        <div id="call-video-stage" class="video-stage hidden">
+          <video id="remote-video" autoplay playsinline></video>
+          <video id="local-video" autoplay muted playsinline></video>
+        </div>
+        <audio id="remote-audio" autoplay></audio>
+
+        <div id="incoming-call-actions" class="call-actions hidden">
+          <button id="btn-call-decline" class="btn-danger" type="button">Decline</button>
+          <button id="btn-call-accept" class="btn-success" type="button">Accept</button>
+        </div>
+
+        <div id="active-call-actions" class="call-actions hidden">
+          <button id="btn-call-mute" class="btn-secondary" type="button">Mute</button>
+          <button id="btn-call-cam" class="btn-secondary hidden" type="button">Camera</button>
+          <button id="btn-call-end" class="btn-danger" type="button">End Call</button>
+        </div>
+      </div>
+    </div>
+
+    <main class="workspace">
+      <aside class="sidebar" id="sidebar-pane">
+        <section class="panel" data-pane="chats">
+          <div class="panel-head">
+            <h3>Public Groups</h3>
+            <span class="chip" id="groups-count">0</span>
+          </div>
+          <ul id="groups-list" class="list"></ul>
+        </section>
+
+        <section class="panel" data-pane="nearby">
+          <div class="panel-head">
+            <h3>Nearby &amp; Web Peers</h3>
+            <span class="chip" id="peers-count">0</span>
+          </div>
+          <ul id="peers-list" class="list"></ul>
+        </section>
+
+        <section class="panel" data-pane="calls">
+          <div class="panel-head">
+            <h3>Recent Calls</h3>
+          </div>
+          <ul id="calls-list" class="list"></ul>
+        </section>
+
+        <section class="panel notice" data-pane="info">
+          <h4>Protocol &amp; Browser Capabilities</h4>
+          <p>Supports public groups, 1-to-1 peer chats, thumbnail previews, SHA-256 verified file transfers, reactions, and delete-for-everyone.</p>
+          <p id="webrtc-capability-note">WebRTC voice/video signaling uses Host ICE over your LAN WebSocket.</p>
+        </section>
+      </aside>
+
+      <section class="chat-area" id="chat-pane">
+        <div class="chat-header">
+          <div class="chat-header-id">
+            <div class="avatar-sm" id="active-room-avatar">E</div>
+            <div>
+              <h2 id="active-room-title">Everyone Room</h2>
+              <span id="active-room-sub" class="muted">Public local room</span>
+            </div>
+          </div>
+          <div class="chat-header-tools">
+            <button id="btn-dm-voice" class="btn-secondary hidden" type="button">Voice Call</button>
+            <button id="btn-dm-video" class="btn-secondary hidden" type="button">Video Call</button>
+            <span id="me-badge" class="badge-web">Web</span>
+          </div>
+        </div>
+
+        <div id="typing-banner" class="typing-banner hidden"></div>
+        <div id="messages-box" class="messages"></div>
+
+        <div id="reply-banner" class="reply-banner hidden">
+          <span id="reply-banner-text"></span>
+          <button id="reply-cancel-btn" class="icon-btn" type="button">✕</button>
+        </div>
+
+        <form id="composer-form" class="composer">
+          <label class="file-btn" title="Share file">
+            <input id="file-input" type="file" hidden />
+            <span>+ File</span>
+          </label>
+          <input id="msg-input" type="text" placeholder="Type a local message…" autocomplete="off" />
+          <button class="btn-primary" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <nav class="mobile-tabs" id="mobile-tabs">
+      <button type="button" class="tab-btn active" data-tab="chat">Chat</button>
+      <button type="button" class="tab-btn" data-tab="nearby">Nearby</button>
+      <button type="button" class="tab-btn" data-tab="calls">Calls</button>
+      <button type="button" class="tab-btn" data-tab="info">Info</button>
+    </nav>
+  </div>
+  <script src="/qrcode.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
