@@ -93,6 +93,8 @@ public class MainActivity extends AppCompatActivity {
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.mainRoot, (v, windowInsets) -> {
             Insets sys = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+            Insets safe = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
             Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
             boolean imeOpen = windowInsets.isVisible(WindowInsetsCompat.Type.ime()) && ime.bottom > 0;
             boolean detailOpen = isInDetailScreen();
@@ -100,14 +102,15 @@ public class MainActivity extends AppCompatActivity {
             boolean hideBottomNav = imeOpen || detailOpen || onboarding;
             boolean suppressBanner = detailOpen || onboarding;
 
-            binding.fragmentContainer.setPadding(sys.left, sys.top, sys.right, 0);
+            binding.fragmentContainer.setPadding(safe.left, safe.top, safe.right, 0);
+            binding.adBannerContainer.setPadding(safe.left, 0, safe.right, 0);
             if (hideBottomNav) {
                 binding.bottomNavigation.setVisibility(View.GONE);
                 binding.bottomNavigation.setPadding(0, 0, 0, 0);
                 binding.mainRoot.setPadding(0, 0, 0, Math.max(sys.bottom, ime.bottom));
             } else {
                 binding.bottomNavigation.setVisibility(View.VISIBLE);
-                binding.bottomNavigation.setPadding(0, 0, 0, sys.bottom);
+                binding.bottomNavigation.setPadding(safe.left, 0, safe.right, sys.bottom);
                 binding.mainRoot.setPadding(0, 0, 0, 0);
             }
             locator.getAdConsentManager().setSuppressedForScreen(suppressBanner);
@@ -117,6 +120,9 @@ public class MainActivity extends AppCompatActivity {
         initTabStacks();
         setupBottomNav();
         setupBackDispatcher();
+
+        // Sync cached Remote Config ads_enabled state immediately without blocking startup/test ads
+        locator.getAdConsentManager().setAdsEnabledByRemoteConfig(cachedGate.adsEnabled);
 
         if (!locator.getPreferencesManager().isProfileSetupDone()) {
             showOnboarding();

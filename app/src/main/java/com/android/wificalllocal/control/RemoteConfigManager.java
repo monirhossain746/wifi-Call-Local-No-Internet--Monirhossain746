@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 
+import androidx.annotation.Nullable;
+
 import com.android.wificalllocal.BuildConfig;
 import com.android.wificalllocal.R;
 import com.android.wificalllocal.network.NetworkUtils;
@@ -47,6 +49,7 @@ public class RemoteConfigManager {
     private static final String PREF_UPDATE_LINK = "cached_update_link";
     private static final String PREF_FORCE_UPDATE = "cached_force_update";
     private static final String PREF_ADS_ENABLED = "cached_ads_enabled";
+    private static final String PREF_ADS_ENABLED_EXPLICIT = "cached_ads_enabled_explicit";
     private static final String PREF_MAX_CACHE_MB = "cached_max_cache_mb";
     private static final String PREF_ONLINE_SERVICES = "cached_online_services_enabled";
     private static final String PREF_GROUP_CALLS = "cached_group_calls_enabled";
@@ -158,7 +161,8 @@ public class RemoteConfigManager {
         long latestVer = cachePrefs.getLong(PREF_LATEST_VERSION, BuildConfig.VERSION_CODE);
         String link = cachePrefs.getString(PREF_UPDATE_LINK, "");
         boolean forceUpdate = cachePrefs.getBoolean(PREF_FORCE_UPDATE, false);
-        boolean adsEnabled = cachePrefs.getBoolean(PREF_ADS_ENABLED, true);
+        boolean adsExplicit = cachePrefs.getBoolean(PREF_ADS_ENABLED_EXPLICIT, false);
+        boolean adsEnabled = adsExplicit ? cachePrefs.getBoolean(PREF_ADS_ENABLED, true) : true;
         long maxCacheMb = cachePrefs.getLong(PREF_MAX_CACHE_MB, CacheManager.DEFAULT_MAX_CACHE_MB);
         boolean onlineServices = cachePrefs.getBoolean(PREF_ONLINE_SERVICES, true);
         boolean groupCalls = cachePrefs.getBoolean(PREF_GROUP_CALLS, true);
@@ -187,6 +191,7 @@ public class RemoteConfigManager {
                 .putString(PREF_UPDATE_LINK, snapshot.updateLink)
                 .putBoolean(PREF_FORCE_UPDATE, snapshot.forceUpdate)
                 .putBoolean(PREF_ADS_ENABLED, snapshot.adsEnabled)
+                .putBoolean(PREF_ADS_ENABLED_EXPLICIT, snapshot.fromNetwork)
                 .putLong(PREF_MAX_CACHE_MB, snapshot.maxCacheSizeMb)
                 .putBoolean(PREF_ONLINE_SERVICES, snapshot.onlineServicesEnabled)
                 .putBoolean(PREF_GROUP_CALLS, snapshot.groupCallsEnabled)
@@ -204,22 +209,38 @@ public class RemoteConfigManager {
         if (remoteConfig == null) {
             return false;
         }
-        ensureDefaultsApplied(remoteConfig);
+        ensureDefaultsApplied(remoteConfig, null);
         return true;
     }
 
-    private void ensureDefaultsApplied(FirebaseRemoteConfig remoteConfig) {
-        if (remoteConfig == null || defaultsApplied) return;
+    private void ensureDefaultsApplied(FirebaseRemoteConfig remoteConfig, @Nullable Runnable afterDefaults) {
+        if (remoteConfig == null) {
+            if (afterDefaults != null) afterDefaults.run();
+            return;
+        }
+        if (defaultsApplied) {
+            if (afterDefaults != null) afterDefaults.run();
+            return;
+        }
+        com.google.android.gms.tasks.Task<Void> defaultsTask;
         synchronized (this) {
-            if (defaultsApplied) return;
-            defaultsApplied = true;
-            long minFetchSeconds = BuildConfig.DEBUG ? 0L : 900L;
-            FirebaseRemoteConfigSettings settings = new FirebaseRemoteConfigSettings.Builder()
-                    .setMinimumFetchIntervalInSeconds(minFetchSeconds)
-                    .setFetchTimeoutInSeconds(10L)
-                    .build();
-            remoteConfig.setConfigSettingsAsync(settings);
-            remoteConfig.setDefaultsAsync(R.xml.remote_config_defaults);
+            if (defaultsApplied) {
+                defaultsTask = null;
+            } else {
+                long minFetchSeconds = BuildConfig.DEBUG ? 0L : 900L;
+                FirebaseRemoteConfigSettings settings = new FirebaseRemoteConfigSettings.Builder()
+                        .setMinimumFetchIntervalInSeconds(minFetchSeconds)
+                        .setFetchTimeoutInSeconds(10L)
+                        .build();
+                remoteConfig.setConfigSettingsAsync(settings);
+                defaultsTask = remoteConfig.setDefaultsAsync(R.xml.remote_config_defaults)
+                        .addOnCompleteListener(t -> defaultsApplied = true);
+            }
+        }
+        if (defaultsTask != null && afterDefaults != null) {
+            defaultsTask.addOnCompleteListener(t -> afterDefaults.run());
+        } else if (afterDefaults != null) {
+            afterDefaults.run();
         }
     }
 
@@ -233,47 +254,48 @@ public class RemoteConfigManager {
             return;
         }
 
-        ensureDefaultsApplied(remoteConfig);
-
         if (!NetworkUtils.hasInternetConnection(context)) {
+            ensureDefaultsApplied(remoteConfig, null);
             lastStatusMessage = "Cached fallback (offline WiFi mode)";
             cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
             postCallback(callback, cached);
             return;
         }
 
-        final AtomicBoolean completed = new AtomicBoolean(false);
-        final Runnable timeoutFallback = () -> {
-            if (completed.compareAndSet(false, true)) {
-                lastStatusMessage = "Cached fallback (fetch timed out)";
-                cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
-                postCallback(callback, getCachedSnapshot());
-            }
-        };
-        mainHandler.postDelayed(timeoutFallback, 12_000L);
-
-        remoteConfig.fetchAndActivate()
-                .addOnCompleteListener(task -> {
-                    mainHandler.removeCallbacks(timeoutFallback);
-                    if (!completed.compareAndSet(false, true)) return;
-                    if (task.isSuccessful()) {
-                        lastStatusMessage = "Active (synced from Firebase)";
-                        ConfigSnapshot latest = readFromFirebase(remoteConfig, true);
-                        persistSnapshot(latest);
-                        postCallback(callback, latest);
-                    } else {
-                        lastStatusMessage = "Cached fallback (offline or throttled)";
-                        cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
-                        postCallback(callback, getCachedSnapshot());
-                    }
-                })
-                .addOnFailureListener(e -> {
-                    mainHandler.removeCallbacks(timeoutFallback);
-                    if (!completed.compareAndSet(false, true)) return;
-                    lastStatusMessage = "Cached fallback (network unavailable)";
+        ensureDefaultsApplied(remoteConfig, () -> {
+            final AtomicBoolean completed = new AtomicBoolean(false);
+            final Runnable timeoutFallback = () -> {
+                if (completed.compareAndSet(false, true)) {
+                    lastStatusMessage = "Cached fallback (fetch timed out)";
                     cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
                     postCallback(callback, getCachedSnapshot());
-                });
+                }
+            };
+            mainHandler.postDelayed(timeoutFallback, 12_000L);
+
+            remoteConfig.fetchAndActivate()
+                    .addOnCompleteListener(task -> {
+                        mainHandler.removeCallbacks(timeoutFallback);
+                        if (!completed.compareAndSet(false, true)) return;
+                        if (task.isSuccessful()) {
+                            lastStatusMessage = "Active (synced from Firebase)";
+                            ConfigSnapshot latest = readFromFirebase(remoteConfig, true);
+                            persistSnapshot(latest);
+                            postCallback(callback, latest);
+                        } else {
+                            lastStatusMessage = "Cached fallback (offline or throttled)";
+                            cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
+                            postCallback(callback, getCachedSnapshot());
+                        }
+                    })
+                    .addOnFailureListener(e -> {
+                        mainHandler.removeCallbacks(timeoutFallback);
+                        if (!completed.compareAndSet(false, true)) return;
+                        lastStatusMessage = "Cached fallback (network unavailable)";
+                        cachePrefs.edit().putString(PREF_LAST_FETCH_STATUS, lastStatusMessage).apply();
+                        postCallback(callback, getCachedSnapshot());
+                    });
+        });
     }
 
     private FirebaseRemoteConfig getRemoteConfigIfAvailable() {
@@ -290,21 +312,56 @@ public class RemoteConfigManager {
         }
     }
 
+    private boolean readBooleanSafe(FirebaseRemoteConfig rc, String key, boolean safeDefault) {
+        try {
+            com.google.firebase.remoteconfig.FirebaseRemoteConfigValue val = rc.getValue(key);
+            if (val.getSource() == FirebaseRemoteConfig.VALUE_SOURCE_STATIC) {
+                return safeDefault;
+            }
+            String raw = val.asString();
+            if (raw.trim().isEmpty()) {
+                return safeDefault;
+            }
+            return val.asBoolean();
+        } catch (Throwable ignored) {
+            return safeDefault;
+        }
+    }
+
+    private long readLongSafe(FirebaseRemoteConfig rc, String key, long safeDefault) {
+        try {
+            com.google.firebase.remoteconfig.FirebaseRemoteConfigValue val = rc.getValue(key);
+            if (val.getSource() == FirebaseRemoteConfig.VALUE_SOURCE_STATIC) {
+                return safeDefault;
+            }
+            long parsed = val.asLong();
+            return parsed > 0 ? parsed : safeDefault;
+        } catch (Throwable ignored) {
+            return safeDefault;
+        }
+    }
+
     private ConfigSnapshot readFromFirebase(FirebaseRemoteConfig rc, boolean fromNetwork) {
-        boolean enabled = rc.getBoolean(KEY_IS_APP_ENABLED);
-        boolean maintenance = rc.getBoolean(KEY_MAINTENANCE_MODE);
+        boolean enabled = readBooleanSafe(rc, KEY_IS_APP_ENABLED, true);
+        boolean maintenance = readBooleanSafe(rc, KEY_MAINTENANCE_MODE, false);
         String maintenanceMsg = rc.getString(KEY_MAINTENANCE_MESSAGE);
         String latestVerName = rc.getString(KEY_LATEST_VERSION);
-        long latestVer = rc.getLong(KEY_LATEST_VERSION_CODE);
+        long latestVer = readLongSafe(rc, KEY_LATEST_VERSION_CODE, BuildConfig.VERSION_CODE);
         String link = rc.getString(KEY_UPDATE_LINK);
-        boolean forceUpdate = rc.getBoolean(KEY_FORCE_UPDATE);
-        boolean adsEnabled = rc.getBoolean(KEY_ADS_ENABLED);
-        long maxCacheMb = rc.getLong(KEY_MAX_CACHE_SIZE_MB);
-        boolean onlineServices = rc.getBoolean(KEY_ONLINE_SERVICES_ENABLED);
-        boolean groupCalls = rc.getBoolean(KEY_GROUP_CALLS_ENABLED);
-        boolean fileTransfer = rc.getBoolean(KEY_FILE_TRANSFER_ENABLED);
-        boolean publicGroups = rc.getBoolean(KEY_PUBLIC_GROUPS_ENABLED);
-        boolean everyoneGroup = rc.getBoolean(KEY_EVERYONE_GROUP_ENABLED);
+        boolean forceUpdate = readBooleanSafe(rc, KEY_FORCE_UPDATE, false);
+        boolean adsEnabled = readBooleanSafe(rc, KEY_ADS_ENABLED, true);
+        boolean adsFromRemote = false;
+        try {
+            adsFromRemote = rc.getValue(KEY_ADS_ENABLED).getSource() == FirebaseRemoteConfig.VALUE_SOURCE_REMOTE;
+        } catch (Throwable ignored) {
+        }
+        cachePrefs.edit().putBoolean(PREF_ADS_ENABLED_EXPLICIT, adsFromRemote).apply();
+        long maxCacheMb = readLongSafe(rc, KEY_MAX_CACHE_SIZE_MB, CacheManager.DEFAULT_MAX_CACHE_MB);
+        boolean onlineServices = readBooleanSafe(rc, KEY_ONLINE_SERVICES_ENABLED, true);
+        boolean groupCalls = readBooleanSafe(rc, KEY_GROUP_CALLS_ENABLED, true);
+        boolean fileTransfer = readBooleanSafe(rc, KEY_FILE_TRANSFER_ENABLED, true);
+        boolean publicGroups = readBooleanSafe(rc, KEY_PUBLIC_GROUPS_ENABLED, true);
+        boolean everyoneGroup = readBooleanSafe(rc, KEY_EVERYONE_GROUP_ENABLED, true);
         String msg = rc.getString(KEY_UPDATE_MESSAGE);
         if (msg.trim().isEmpty()) {
             msg = context.getString(R.string.force_update_default_msg);
