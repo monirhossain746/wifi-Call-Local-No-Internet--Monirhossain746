@@ -96,10 +96,12 @@ public class MainActivity extends AppCompatActivity {
             Insets ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
             boolean imeOpen = windowInsets.isVisible(WindowInsetsCompat.Type.ime()) && ime.bottom > 0;
             boolean detailOpen = isInDetailScreen();
-            boolean hideChrome = imeOpen || detailOpen || !locator.getPreferencesManager().isProfileSetupDone();
+            boolean onboarding = !locator.getPreferencesManager().isProfileSetupDone();
+            boolean hideBottomNav = imeOpen || detailOpen || onboarding;
+            boolean suppressBanner = detailOpen || onboarding;
 
             binding.fragmentContainer.setPadding(sys.left, sys.top, sys.right, 0);
-            if (hideChrome) {
+            if (hideBottomNav) {
                 binding.bottomNavigation.setVisibility(View.GONE);
                 binding.bottomNavigation.setPadding(0, 0, 0, 0);
                 binding.mainRoot.setPadding(0, 0, 0, Math.max(sys.bottom, ime.bottom));
@@ -108,7 +110,7 @@ public class MainActivity extends AppCompatActivity {
                 binding.bottomNavigation.setPadding(0, 0, 0, sys.bottom);
                 binding.mainRoot.setPadding(0, 0, 0, 0);
             }
-            locator.getAdConsentManager().setSuppressedForScreen(hideChrome);
+            locator.getAdConsentManager().setSuppressedForScreen(suppressBanner);
             return WindowInsetsCompat.CONSUMED;
         });
 
@@ -128,17 +130,77 @@ public class MainActivity extends AppCompatActivity {
         checkRemoteControlGate();
     }
 
+    private boolean maintenanceNoticeShown = false;
+    private boolean optionalUpdatePromptShown = false;
+
     @Override
     protected void onResume() {
         super.onResume();
+        if (locator != null) {
+            locator.getAdConsentManager().resumeBanner();
+        }
         checkRemoteControlGate();
+    }
+
+    @Override
+    protected void onPause() {
+        if (locator != null) {
+            locator.getAdConsentManager().pauseBanner();
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (locator != null) {
+            locator.getAdConsentManager().destroyBanner();
+        }
+        super.onDestroy();
     }
 
     private void checkRemoteControlGate() {
         if (locator == null) return;
         locator.getAppControlManager().checkRemoteGate(state -> {
-            if (!isFinishing() && !isDestroyed() && state.isBlocked()) {
+            if (isFinishing() || isDestroyed()) return;
+            if (state.isBlocked()) {
                 locator.getAppControlManager().enforceGateIfBlocked(this, state);
+                return;
+            }
+            locator.getAdConsentManager().setAdsEnabledByRemoteConfig(state.adsEnabled);
+            if (state.adsEnabled && locator.getPreferencesManager().isProfileSetupDone()) {
+                locator.getAdConsentManager().initializeAndLoadBanner(this, binding.adBannerContainer);
+            }
+            if (state.maintenanceMode && !maintenanceNoticeShown) {
+                maintenanceNoticeShown = true;
+                String msg = !state.maintenanceMessage.isEmpty()
+                        ? state.maintenanceMessage
+                        : "Remote services are undergoing maintenance. Local WiFi chat, calling, and file sharing remain active.";
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.maintenance_mode_title)
+                        .setMessage(msg)
+                        .setPositiveButton(R.string.ok, null)
+                        .show();
+            } else if (state.isOptionalUpdateAvailable(com.android.wificalllocal.BuildConfig.VERSION_CODE)
+                    && !optionalUpdatePromptShown) {
+                optionalUpdatePromptShown = true;
+                String msg = !state.updateMessage.isEmpty()
+                        ? state.updateMessage
+                        : ("Version v" + state.latestVersionName + " (Build " + state.latestVersionCode + ") is available.");
+                new MaterialAlertDialogBuilder(this)
+                        .setTitle(R.string.optional_update_title)
+                        .setMessage(msg)
+                        .setPositiveButton(R.string.btn_update_now, (d, w) -> {
+                            String url = com.android.wificalllocal.control.UpdateManager.isValidHttpsUpdateUrl(state.updateLink)
+                                    ? state.updateLink
+                                    : SettingsFragment.GITHUB_REPO_URL;
+                            try {
+                                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                            } catch (Exception e) {
+                                Toast.makeText(this, R.string.error_no_browser_github, Toast.LENGTH_SHORT).show();
+                            }
+                        })
+                        .setNegativeButton(R.string.cancel, null)
+                        .show();
             }
         });
     }
@@ -340,6 +402,55 @@ public class MainActivity extends AppCompatActivity {
         i.putExtra(CallActivity.EXTRA_PEER_IP, peerIp);
         i.putExtra(CallActivity.EXTRA_CALL_TYPE, callType);
         startActivity(i);
+    }
+
+    public void startGroupCall(String callId, String groupId, String groupName, String callType) {
+        AppControlManager.AppGateState gate = locator.getAppControlManager().getLastState();
+        if (gate != null && !gate.groupCallsEnabled) {
+            Toast.makeText(this, R.string.feature_disabled_remote, Toast.LENGTH_LONG).show();
+            return;
+        }
+        Intent i = new Intent(this, CallActivity.class);
+        i.putExtra(CallActivity.EXTRA_INCOMING, false);
+        i.putExtra(CallActivity.EXTRA_CALL_ID, callId != null && !callId.isEmpty()
+                ? callId : java.util.UUID.randomUUID().toString());
+        i.putExtra(CallActivity.EXTRA_GROUP_ID, groupId);
+        i.putExtra(CallActivity.EXTRA_GROUP_NAME, groupName);
+        i.putExtra(CallActivity.EXTRA_CALL_TYPE, callType);
+        startActivity(i);
+    }
+
+    public void openPeerProfile(com.android.wificalllocal.data.local.entity.PeerEntity peer) {
+        if (peer == null) return;
+        String details = "Device ID: " + peer.deviceId
+                + "\nAddress: " + peer.ipAddress + ":" + peer.port
+                + "\nMode: " + peer.connectionMode
+                + (peer.isWebUser ? " (Browser Companion)" : " (Android App)")
+                + "\nStatus: " + (peer.isOnline ? peer.activeStatus : "OFFLINE")
+                + (peer.bio != null && !peer.bio.isEmpty() ? "\nBio: " + peer.bio : "");
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(peer.name)
+                .setMessage(details)
+                .setPositiveButton(R.string.btn_voice_call, (d, w) ->
+                        startOutgoingCall(peer.deviceId, peer.name, peer.ipAddress, "VOICE"))
+                .setNeutralButton(R.string.action_save_contact, (d, w) -> {
+                    com.android.wificalllocal.data.local.AppDatabase.DB_EXECUTOR.execute(() -> {
+                        locator.getDatabase().savedContactDao().upsert(
+                                new com.android.wificalllocal.data.local.entity.SavedContactEntity(
+                                        java.util.UUID.randomUUID().toString(),
+                                        peer.deviceId,
+                                        peer.name,
+                                        peer.ipAddress + ":" + peer.port,
+                                        peer.bio != null ? peer.bio : "",
+                                        System.currentTimeMillis()
+                                )
+                        );
+                    });
+                    Toast.makeText(this, "Saved to local contacts", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton(R.string.close, null)
+                .show();
     }
 
     private void handleScannedQr(String scanned) {

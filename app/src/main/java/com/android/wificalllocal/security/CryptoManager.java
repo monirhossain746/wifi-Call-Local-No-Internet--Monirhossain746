@@ -63,6 +63,19 @@ public class CryptoManager {
         return Base64.getEncoder().encodeToString(derived);
     }
 
+    public boolean verifyPin(String pin, String saltBase64, String storedHashBase64) {
+        if (pin == null || saltBase64 == null || storedHashBase64 == null) return false;
+        try {
+            String candidate = hashPinWithSalt(pin, saltBase64);
+            return MessageDigest.isEqual(
+                    candidate.getBytes(StandardCharsets.UTF_8),
+                    storedHashBase64.getBytes(StandardCharsets.UTF_8)
+            );
+        } catch (GeneralSecurityException e) {
+            return false;
+        }
+    }
+
     /**
      * Computes challenge-response proof: HMAC-SHA256(key = PBKDF2(pin, salt), message = nonce + ":" + groupId + ":" + requesterId).
      * Neither side transmits the raw PIN over the network.

@@ -56,6 +56,8 @@ public class GroupInfoFragment extends Fragment {
         return binding.getRoot();
     }
 
+    private boolean isOwnerOrAdmin = false;
+
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
@@ -64,14 +66,23 @@ public class GroupInfoFragment extends Fragment {
         String myId = locator.getPreferencesManager().getOrCreateDeviceId();
 
         memberAdapter = new GroupMemberAdapter((member, anchor) -> {
-            String[] opts = {getString(R.string.group_promote_admin), getString(R.string.group_remove_member)};
+            boolean isMemberOwner = currentGroup != null && member.deviceId.equals(currentGroup.ownerId);
+            if (isMemberOwner) {
+                Toast.makeText(requireContext(), "Group creator role cannot be changed.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            boolean isMemberAdmin = "ADMIN".equalsIgnoreCase(member.role) || "OWNER".equalsIgnoreCase(member.role);
+            String roleAction = isMemberAdmin
+                    ? getString(R.string.group_demote_admin)
+                    : getString(R.string.group_promote_admin);
+            String[] opts = {roleAction, getString(R.string.group_remove_member)};
             new MaterialAlertDialogBuilder(requireContext())
                     .setTitle(member.displayName)
                     .setItems(opts, (d, which) -> AppDatabase.DB_EXECUTOR.execute(() -> {
                         if (which == 0) {
-                            member.role = "ADMIN";
+                            member.role = isMemberAdmin ? "MEMBER" : "ADMIN";
                             locator.getDatabase().groupDao().upsertMember(member);
-                            postSystemMessage(member.displayName + " is now an admin");
+                            postSystemMessage(member.displayName + (isMemberAdmin ? " is no longer an admin" : " is now an admin"));
                         } else {
                             locator.getDatabase().groupDao().removeMember(groupId, member.deviceId);
                             postSystemMessage(member.displayName + " was removed from the group");
@@ -91,14 +102,15 @@ public class GroupInfoFragment extends Fragment {
             binding.groupInfoDesc.setText(group.description);
             binding.switchGroupMute.setChecked(group.isMuted);
             binding.switchAdminsOnly.setChecked(group.adminsOnlySend);
-            boolean isOwnerOrAdmin = myId.equals(group.ownerId);
-            binding.btnRotatePin.setVisibility(group.isPrivate && isOwnerOrAdmin ? View.VISIBLE : View.GONE);
-            binding.switchAdminsOnly.setEnabled(isOwnerOrAdmin);
-            binding.btnRenameGroup.setVisibility(isOwnerOrAdmin ? View.VISIBLE : View.GONE);
-            memberAdapter.setCanManage(isOwnerOrAdmin);
+            updateAdminUi(myId, group, null);
         });
 
-        locator.getDatabase().groupDao().observeMembers(groupId).observe(getViewLifecycleOwner(), memberAdapter::submitList);
+        locator.getDatabase().groupDao().observeMembers(groupId).observe(getViewLifecycleOwner(), members -> {
+            memberAdapter.submitList(members);
+            if (currentGroup != null) {
+                updateAdminUi(myId, currentGroup, members);
+            }
+        });
 
         loadSharedFiles();
 
@@ -237,6 +249,23 @@ public class GroupInfoFragment extends Fragment {
                 false, false, "{}", false
         );
         locator.getPeerConnectionManager().sendMessage(groupId, null, sys, null);
+    }
+
+    private void updateAdminUi(String myId, GroupEntity group, @Nullable List<GroupMemberEntity> members) {
+        boolean admin = myId.equals(group.ownerId);
+        if (!admin && members != null) {
+            for (GroupMemberEntity m : members) {
+                if (myId.equals(m.deviceId) && ("OWNER".equalsIgnoreCase(m.role) || "ADMIN".equalsIgnoreCase(m.role))) {
+                    admin = true;
+                    break;
+                }
+            }
+        }
+        isOwnerOrAdmin = admin;
+        binding.btnRotatePin.setVisibility(group.isPrivate && isOwnerOrAdmin ? View.VISIBLE : View.GONE);
+        binding.switchAdminsOnly.setEnabled(isOwnerOrAdmin);
+        binding.btnRenameGroup.setVisibility(isOwnerOrAdmin ? View.VISIBLE : View.GONE);
+        memberAdapter.setCanManage(isOwnerOrAdmin);
     }
 
     @Override

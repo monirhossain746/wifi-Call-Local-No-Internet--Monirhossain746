@@ -39,7 +39,7 @@ import java.util.concurrent.Executors;
                 FileTransferEntity.class,
                 SavedContactEntity.class
         },
-        version = 3,
+        version = 4,
         exportSchema = false
 )
 public abstract class AppDatabase extends RoomDatabase {
@@ -73,11 +73,20 @@ public abstract class AppDatabase extends RoomDatabase {
                 }
             };
 
+    public static final androidx.room.migration.Migration MIGRATION_3_4 =
+            new androidx.room.migration.Migration(3, 4) {
+                @Override
+                public void migrate(@androidx.annotation.NonNull androidx.sqlite.db.SupportSQLiteDatabase db) {
+                    db.execSQL("ALTER TABLE messages ADD COLUMN isEdited INTEGER NOT NULL DEFAULT 0");
+                    db.execSQL("ALTER TABLE messages ADD COLUMN editedAt INTEGER NOT NULL DEFAULT 0");
+                }
+            };
+
     public static AppDatabase build(Context context) {
         return Room.databaseBuilder(
                 context.getApplicationContext(),
                 AppDatabase.class,
                 "wifi_call_local.db"
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).fallbackToDestructiveMigration(false).build();
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).fallbackToDestructiveMigration(false).build();
     }
 }

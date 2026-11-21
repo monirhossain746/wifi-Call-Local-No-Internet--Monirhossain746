@@ -39,6 +39,8 @@ public class MessageEntity {
     public String reactionsJson; // JSON map: {"👍":[{"id":"...","name":"..."}]}
     public boolean isEncrypted;
     public String thumbnailBase64;
+    public boolean isEdited;
+    public long editedAt;
 
     @androidx.room.Ignore
     public MessageEntity(@NonNull String messageId, @NonNull String chatId, @NonNull String senderId,
@@ -53,7 +55,24 @@ public class MessageEntity {
                 replyToMessageId, replyToPreview, forwardedFrom, attachmentId, attachmentName,
                 attachmentMime, attachmentSize, attachmentSha256, localFilePath, status,
                 hlcTimestamp, hlcCounter, createdAt, isDeletedForMe, isDeletedForEveryone,
-                reactionsJson, isEncrypted, null);
+                reactionsJson, isEncrypted, null, false, 0L);
+    }
+
+    @androidx.room.Ignore
+    public MessageEntity(@NonNull String messageId, @NonNull String chatId, @NonNull String senderId,
+                         @NonNull String senderName, boolean senderIsWeb, @NonNull String type,
+                         String content, String replyToMessageId, String replyToPreview,
+                         String forwardedFrom, String attachmentId, String attachmentName,
+                         String attachmentMime, long attachmentSize, String attachmentSha256,
+                         String localFilePath, @NonNull String status, long hlcTimestamp,
+                         int hlcCounter, long createdAt, boolean isDeletedForMe,
+                         boolean isDeletedForEveryone, String reactionsJson, boolean isEncrypted,
+                         String thumbnailBase64) {
+        this(messageId, chatId, senderId, senderName, senderIsWeb, type, content,
+                replyToMessageId, replyToPreview, forwardedFrom, attachmentId, attachmentName,
+                attachmentMime, attachmentSize, attachmentSha256, localFilePath, status,
+                hlcTimestamp, hlcCounter, createdAt, isDeletedForMe, isDeletedForEveryone,
+                reactionsJson, isEncrypted, thumbnailBase64, false, 0L);
     }
 
     public MessageEntity(@NonNull String messageId, @NonNull String chatId, @NonNull String senderId,
@@ -64,7 +83,7 @@ public class MessageEntity {
                          String localFilePath, @NonNull String status, long hlcTimestamp,
                          int hlcCounter, long createdAt, boolean isDeletedForMe,
                          boolean isDeletedForEveryone, String reactionsJson, boolean isEncrypted,
-                         String thumbnailBase64) {
+                         String thumbnailBase64, boolean isEdited, long editedAt) {
         this.messageId = messageId;
         this.chatId = chatId;
         this.senderId = senderId;
@@ -90,5 +109,7 @@ public class MessageEntity {
         this.reactionsJson = reactionsJson != null ? reactionsJson : "{}";
         this.isEncrypted = isEncrypted;
         this.thumbnailBase64 = thumbnailBase64;
+        this.isEdited = isEdited;
+        this.editedAt = editedAt;
     }
 }

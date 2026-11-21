@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.android.wificalllocal.control.AppControlManager;
 import com.android.wificalllocal.data.local.AppDatabase;
 import com.android.wificalllocal.data.local.entity.CallLogEntity;
 import com.android.wificalllocal.data.local.entity.ChatEntity;
@@ -125,6 +126,7 @@ public class PeerConnectionManager {
     private final Map<String, TokenBucket> rateLimitBuckets = new ConcurrentHashMap<>();
 
     private LocalHttpServer localHttpServer;
+    private AppControlManager appControlManager;
     private ScheduledExecutorService scheduler;
     private volatile CallSignalListener callSignalListener;
     private volatile TypingListener typingListener;
@@ -146,6 +148,14 @@ public class PeerConnectionManager {
 
     public void attachServer(LocalHttpServer server) {
         this.localHttpServer = server;
+    }
+
+    public void attachAppControlManager(AppControlManager manager) {
+        this.appControlManager = manager;
+    }
+
+    public AppControlManager.AppGateState getGateState() {
+        return appControlManager != null ? appControlManager.getLastState() : null;
     }
 
     public void setCallSignalListener(CallSignalListener listener) {
@@ -280,6 +290,12 @@ public class PeerConnectionManager {
             }
             if (pkt.status == null && pkt.payload.get("status") != null) {
                 pkt.status = String.valueOf(pkt.payload.get("status"));
+            }
+            if (pkt.newContent == null && pkt.payload.get("newContent") != null) {
+                pkt.newContent = String.valueOf(pkt.payload.get("newContent"));
+            }
+            if (pkt.payload.get("editedAt") instanceof Number && pkt.editedAt == 0L) {
+                pkt.editedAt = ((Number) pkt.payload.get("editedAt")).longValue();
             }
             if (pkt.payload.get("muted") instanceof Boolean) {
                 pkt.muted = (Boolean) pkt.payload.get("muted");
@@ -421,12 +437,21 @@ public class PeerConnectionManager {
 
     public void sendMessage(String chatId, String targetPeerId, MessageEntity msg, NetPacket.FileManifestDto manifest) {
         AppDatabase.DB_EXECUTOR.execute(() -> {
+            AppControlManager.AppGateState gate = getGateState();
+            if (gate != null) {
+                if (manifest != null && !gate.fileTransferEnabled) return;
+                if (AppDatabase.EVERYONE_ROOM_ID.equals(chatId) && !gate.everyoneGroupEnabled) return;
+            }
             HybridLogicalClock.Timestamp ts = hlc.nextLocal();
             msg.hlcTimestamp = ts.physical;
             msg.hlcCounter = ts.counter;
             msg.status = "SENDING";
 
             GroupEntity group = db.groupDao().getGroupSync(chatId);
+            if (gate != null && group != null && !group.isPrivate
+                    && !AppDatabase.EVERYONE_ROOM_ID.equals(chatId) && !gate.publicGroupsEnabled) {
+                return;
+            }
             String wireContent = msg.content;
             if (group != null && group.isPrivate && derivedGroupKeys.containsKey(group.groupId) && wireContent != null && !wireContent.isEmpty()) {
                 try {
@@ -557,6 +582,48 @@ public class PeerConnectionManager {
             pkt.emoji = emoji;
             pkt.emojiAction = action;
             broadcastPacket(pkt);
+        });
+    }
+
+    public void sendMessageEdit(String chatId, String messageId, String newContent) {
+        if (chatId == null || messageId == null || newContent == null) return;
+        String trimmed = newContent.trim();
+        if (trimmed.isEmpty()) return;
+        AppDatabase.DB_EXECUTOR.execute(() -> {
+            MessageEntity existing = db.messageDao().getByIdSync(messageId);
+            String myId = prefs.getOrCreateDeviceId();
+            if (existing == null || !myId.equals(existing.senderId) || !"TEXT".equals(existing.type) || existing.isDeletedForEveryone) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            db.messageDao().editMessage(messageId, trimmed, now);
+            existing.content = trimmed;
+            existing.isEdited = true;
+            existing.editedAt = now;
+            updateChatSummary(chatId, existing, false);
+
+            String wireContent = trimmed;
+            GroupEntity group = db.groupDao().getGroupSync(chatId);
+            if (group != null && group.isPrivate && derivedGroupKeys.containsKey(group.groupId)) {
+                try {
+                    wireContent = crypto.encryptAesGcm(trimmed, derivedGroupKeys.get(group.groupId));
+                } catch (Exception ignored) {
+                }
+            }
+
+            NetPacket pkt = buildBasePacket(NetPacket.TYPE_MESSAGE_EDIT);
+            pkt.chatId = chatId;
+            pkt.messageId = messageId;
+            pkt.newContent = wireContent;
+            pkt.editedAt = now;
+            if (chatId.startsWith("dm:")) {
+                String targetPeerId = extractOtherDmPeerId(chatId, myId);
+                if (targetPeerId != null) sendPacketToPeer(targetPeerId, pkt);
+            } else if (group != null && group.isPrivate) {
+                sendToAuthorizedGroupPeers(group, pkt);
+            } else {
+                broadcastPacket(pkt);
+            }
         });
     }
 
@@ -789,6 +856,41 @@ public class PeerConnectionManager {
                     }
                     break;
 
+                case NetPacket.TYPE_MESSAGE_EDIT:
+                    if (pkt.messageId != null && pkt.newContent != null) {
+                        MessageEntity targetEdit = db.messageDao().getByIdSync(pkt.messageId);
+                        if (targetEdit != null && pkt.senderId != null
+                                && pkt.senderId.equals(targetEdit.senderId)
+                                && "TEXT".equals(targetEdit.type)
+                                && !targetEdit.isDeletedForEveryone
+                                && isPeerAuthorizedForChat(targetEdit.chatId, pkt.senderId, myId, null)) {
+                            String editedText = pkt.newContent;
+                            if (targetEdit.isEncrypted && derivedGroupKeys.containsKey(targetEdit.chatId)) {
+                                try {
+                                    editedText = crypto.decryptAesGcm(pkt.newContent, derivedGroupKeys.get(targetEdit.chatId));
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            long editedAt = pkt.editedAt > 0 ? pkt.editedAt : System.currentTimeMillis();
+                            db.messageDao().editMessage(pkt.messageId, editedText, editedAt);
+                            targetEdit.content = editedText;
+                            targetEdit.isEdited = true;
+                            targetEdit.editedAt = editedAt;
+                            updateChatSummary(targetEdit.chatId, targetEdit, false);
+                            if (localHttpServer != null) {
+                                NetPacket relay = buildBasePacket(NetPacket.TYPE_MESSAGE_EDIT);
+                                relay.senderId = pkt.senderId;
+                                relay.senderName = pkt.senderName;
+                                relay.chatId = targetEdit.chatId;
+                                relay.messageId = pkt.messageId;
+                                relay.newContent = editedText;
+                                relay.editedAt = editedAt;
+                                relayToChatWebClients(targetEdit.chatId, pkt.senderId, serializePacket(relay));
+                            }
+                        }
+                    }
+                    break;
+
                 case NetPacket.TYPE_MESSAGE_DELETE:
                     if (pkt.messageId != null) {
                         MessageEntity targetMsg = db.messageDao().getByIdSync(pkt.messageId);
@@ -850,6 +952,8 @@ public class PeerConnectionManager {
 
     private void handleGroupCallSignalingPacket(NetPacket pkt, String myId) {
         if (pkt.callId == null || pkt.groupId == null) return;
+        AppControlManager.AppGateState gate = getGateState();
+        if (gate != null && !gate.groupCallsEnabled) return;
         GroupEntity group = db.groupDao().getGroupSync(pkt.groupId);
         if (!isPeerAuthorizedForGroup(group, pkt.senderId)) {
             return;
@@ -1303,7 +1407,9 @@ public class PeerConnectionManager {
                 dto.isDeletedForEveryone,
                 dto.reactionsJson,
                 dto.isEncrypted,
-                thumbBase64
+                thumbBase64,
+                dto.isEdited,
+                dto.editedAt
         );
         long inserted = db.messageDao().insertIfAbsent(msg);
         if (inserted > 0 && !addressedToOtherPeer) {
@@ -1707,6 +1813,28 @@ public class PeerConnectionManager {
         return pkt;
     }
 
+    private void relayToChatWebClients(String chatId, String excludeSenderId, String wireJson) {
+        if (localHttpServer == null || chatId == null) return;
+        if (chatId.startsWith("dm:")) {
+            String other = extractOtherDmPeerId(chatId, excludeSenderId != null ? excludeSenderId : "");
+            if (other != null) localHttpServer.sendToWebClient(other, wireJson);
+            return;
+        }
+        GroupEntity grp = db.groupDao().getGroupSync(chatId);
+        if (grp != null && grp.isPrivate) {
+            List<GroupMemberEntity> members = db.groupDao().getMembersSync(grp.groupId);
+            if (members != null) {
+                for (GroupMemberEntity m : members) {
+                    if (m.deviceId != null && !m.deviceId.equals(excludeSenderId)) {
+                        localHttpServer.sendToWebClient(m.deviceId, wireJson);
+                    }
+                }
+            }
+        } else {
+            localHttpServer.broadcastToWebClientsExcept(wireJson, excludeSenderId);
+        }
+    }
+
     private NetPacket.MessageDto toDto(MessageEntity e) {
         NetPacket.MessageDto d = new NetPacket.MessageDto();
         d.messageId = e.messageId;
@@ -1731,6 +1859,8 @@ public class PeerConnectionManager {
         d.reactionsJson = e.reactionsJson;
         d.isEncrypted = e.isEncrypted;
         d.thumbnailBase64 = e.thumbnailBase64;
+        d.isEdited = e.isEdited;
+        d.editedAt = e.editedAt;
         return d;
     }
 

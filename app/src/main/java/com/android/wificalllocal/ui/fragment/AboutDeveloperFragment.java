@@ -20,6 +20,7 @@ public class AboutDeveloperFragment extends Fragment {
 
     private static final String PORTFOLIO_URL = "https://monirhossain746.blogspot.com";
     private static final String FACEBOOK_URL = "https://facebook.com/Monirhossain746";
+    private static final String GITHUB_URL = "https://github.com/monirhossain746/wifi-Call-Local-No-Internet-Monirhossain746";
 
     private FragmentAboutDeveloperBinding binding;
 
@@ -38,6 +39,7 @@ public class AboutDeveloperFragment extends Fragment {
         binding.btnVisitPortfolio.setOnClickListener(v -> openUrl(PORTFOLIO_URL));
         binding.btnFacebook.setOnClickListener(v -> openUrl(FACEBOOK_URL));
         binding.btnContactDev.setOnClickListener(v -> openUrl(PORTFOLIO_URL));
+        binding.btnGithubRepo.setOnClickListener(v -> openUrl(GITHUB_URL));
     }
 
     private void openUrl(String url) {

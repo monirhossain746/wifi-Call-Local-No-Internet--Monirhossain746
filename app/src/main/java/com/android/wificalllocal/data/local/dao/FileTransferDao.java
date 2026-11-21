@@ -15,6 +15,9 @@ public interface FileTransferDao {
     @Query("SELECT * FROM file_transfers ORDER BY updatedAt DESC")
     LiveData<List<FileTransferEntity>> observeAll();
 
+    @Query("SELECT * FROM file_transfers ORDER BY updatedAt DESC")
+    List<FileTransferEntity> getAllSync();
+
     @Query("SELECT * FROM file_transfers WHERE transferId = :transferId LIMIT 1")
     FileTransferEntity getByIdSync(String transferId);
 

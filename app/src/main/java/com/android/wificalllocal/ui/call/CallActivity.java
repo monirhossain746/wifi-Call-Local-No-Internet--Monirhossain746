@@ -2,12 +2,20 @@ package com.android.wificalllocal.ui.call;
 
 import android.Manifest;
 import android.app.PictureInPictureParams;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.media.AudioAttributes;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.util.Rational;
 import android.view.View;
 import android.widget.Toast;
@@ -20,6 +28,7 @@ import androidx.core.content.ContextCompat;
 
 import com.android.wificalllocal.R;
 import com.android.wificalllocal.ServiceLocator;
+import com.android.wificalllocal.control.AppControlManager;
 import com.android.wificalllocal.data.local.AppDatabase;
 import com.android.wificalllocal.data.local.entity.CallLogEntity;
 import com.android.wificalllocal.databinding.ActivityCallBinding;
@@ -33,6 +42,9 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import org.webrtc.VideoTrack;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 public class CallActivity extends AppCompatActivity implements PeerConnectionManager.CallSignalListener, WebRtcCallManager.CallEvents {
@@ -44,6 +56,10 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
     public static final String EXTRA_PEER_IP = "peer_ip";
     public static final String EXTRA_CALL_TYPE = "call_type";
     public static final String EXTRA_OFFER_SDP = "offer_sdp";
+    public static final String EXTRA_GROUP_ID = "group_id";
+    public static final String EXTRA_GROUP_NAME = "group_name";
+
+    private static final long OUTGOING_NO_ANSWER_TIMEOUT_MS = 35_000L;
 
     private ActivityCallBinding binding;
     private ServiceLocator locator;
@@ -56,6 +72,10 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
     private String peerIp;
     private String callType;
     private String offerSdp;
+    private String groupId;
+    private String groupName;
+    private boolean isGroupCall;
+    private String myDeviceId;
 
     private boolean isMuted = false;
     private boolean isSpeaker = false;
@@ -63,16 +83,29 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
     private boolean callConnected = false;
     private long connectedAtMs = 0L;
     private String finalStatus = "MISSED";
+    private boolean endSignalSent = false;
+
+    private Ringtone incomingRingtone;
+    private Vibrator incomingVibrator;
 
     private final Handler timerHandler = new Handler(Looper.getMainLooper());
     private final Runnable timerRunnable = new Runnable() {
         @Override
         public void run() {
-            if (callConnected) {
+            if (callConnected && binding != null) {
                 long sec = (System.currentTimeMillis() - connectedAtMs) / 1000L;
-                binding.callDurationText.setText(String.format("%02d:%02d", sec / 60, sec % 60));
+                binding.callDurationText.setText(String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60));
                 timerHandler.postDelayed(this, 1000L);
             }
+        }
+    };
+
+    private final Runnable noAnswerTimeoutRunnable = () -> {
+        if (!isFinishing() && !isDestroyed() && !callConnected && !isIncoming && !isGroupCall) {
+            finalStatus = "NO_ANSWER";
+            sendEndSignal(false);
+            Toast.makeText(this, R.string.call_status_no_answer, Toast.LENGTH_SHORT).show();
+            finish();
         }
     };
 
@@ -97,8 +130,9 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
         setContentView(binding.getRoot());
 
         locator = ServiceLocator.getInstance(this);
-        if (locator.getAppControlManager().getCurrentGateState().isBlocked()) {
-            locator.getAppControlManager().enforceGateIfBlocked(this, locator.getAppControlManager().getCurrentGateState());
+        AppControlManager.AppGateState gateState = locator.getAppControlManager().getCurrentGateState();
+        if (gateState.isBlocked()) {
+            locator.getAppControlManager().enforceGateIfBlocked(this, gateState);
             return;
         }
         locator.getNotificationHelper().cancelIncomingCallNotification();
@@ -112,16 +146,34 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
         callType = getIntent().getStringExtra(EXTRA_CALL_TYPE);
         if (callType == null) callType = "VOICE";
         offerSdp = getIntent().getStringExtra(EXTRA_OFFER_SDP);
+        groupId = getIntent().getStringExtra(EXTRA_GROUP_ID);
+        groupName = getIntent().getStringExtra(EXTRA_GROUP_NAME);
+        isGroupCall = groupId != null && !groupId.isEmpty();
+        myDeviceId = locator.getPreferencesManager().getOrCreateDeviceId();
+
+        if (isGroupCall && !gateState.groupCallsEnabled) {
+            Toast.makeText(this, R.string.feature_disabled_remote, Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
 
         boolean isVideo = callType.contains("VIDEO");
         isVideoEnabled = isVideo;
         isSpeaker = isVideo;
 
-        binding.callPeerName.setText(peerName != null ? peerName : "Local Peer");
-        AvatarLoader.loadPeerAvatar(binding.callAvatar, peerName, peerId, null);
+        String titleName = isGroupCall && groupName != null && !groupName.isEmpty()
+                ? groupName
+                : (peerName != null ? peerName : "Local Peer");
+        binding.callPeerName.setText(titleName);
+        AvatarLoader.loadPeerAvatar(binding.callAvatar, titleName, isGroupCall ? groupId : peerId, null);
         binding.btnVideoToggle.setVisibility(isVideo ? View.VISIBLE : View.GONE);
         binding.btnFlipCamera.setVisibility(isVideo ? View.VISIBLE : View.GONE);
         binding.btnPip.setVisibility(isVideo ? View.VISIBLE : View.GONE);
+
+        if (isGroupCall) {
+            binding.callParticipantsStrip.setVisibility(View.VISIBLE);
+            refreshGroupParticipantsStrip();
+        }
 
         locator.getPeerConnectionManager().setCallSignalListener(this);
 
@@ -129,6 +181,7 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
             NetPacket busy = locator.getPeerConnectionManager().buildBasePacket(NetPacket.TYPE_CALL_BUSY);
             busy.targetId = peerId;
             busy.callId = callId;
+            busy.groupId = groupId;
             locator.getPeerConnectionManager().sendPacketToPeer(peerId, busy);
             finalStatus = "BUSY";
             finish();
@@ -141,32 +194,42 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
             binding.callStatusText.setText(isVideo ? R.string.call_incoming_video : R.string.call_incoming_voice);
             binding.incomingControls.setVisibility(View.VISIBLE);
             binding.callControlsCard.setVisibility(View.GONE);
-            NetPacket ringing = locator.getPeerConnectionManager().buildBasePacket(NetPacket.TYPE_CALL_RINGING);
-            ringing.targetId = peerId;
-            ringing.callId = callId;
-            locator.getPeerConnectionManager().sendPacketToPeer(peerId, ringing);
+            startIncomingAlert();
+
+            if (!isGroupCall) {
+                NetPacket ringing = locator.getPeerConnectionManager().buildBasePacket(NetPacket.TYPE_CALL_RINGING);
+                ringing.targetId = peerId;
+                ringing.callId = callId;
+                locator.getPeerConnectionManager().sendPacketToPeer(peerId, ringing);
+            }
         } else {
-            binding.callStatusText.setText(R.string.call_status_ringing);
+            binding.callStatusText.setText(isGroupCall ? R.string.call_status_connecting : R.string.call_status_ringing);
             checkMediaPermissionsAndStart();
+            if (!isGroupCall) {
+                timerHandler.postDelayed(noAnswerTimeoutRunnable, OUTGOING_NO_ANSWER_TIMEOUT_MS);
+            }
         }
     }
 
     private void setupControls() {
         binding.btnAcceptCall.setOnClickListener(v -> {
+            stopIncomingAlert();
             binding.incomingControls.setVisibility(View.GONE);
             binding.callControlsCard.setVisibility(View.VISIBLE);
             checkMediaPermissionsAndStart();
         });
 
         binding.btnRejectCall.setOnClickListener(v -> {
+            stopIncomingAlert();
             finalStatus = "REJECTED";
-            sendEndSignal();
+            sendEndSignal(true);
             finish();
         });
 
         binding.btnEndCall.setOnClickListener(v -> {
+            stopIncomingAlert();
             finalStatus = callConnected ? "COMPLETED" : "MISSED";
-            sendEndSignal();
+            sendEndSignal(false);
             finish();
         });
 
@@ -174,6 +237,10 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
             isMuted = !isMuted;
             if (webRtcManager != null) webRtcManager.setMuted(isMuted);
             binding.btnMute.setImageResource(isMuted ? R.drawable.ic_mic_off : R.drawable.ic_mic);
+            if (isGroupCall) {
+                locator.getPeerConnectionManager().updateGroupCallSelfState(callId, groupId, isMuted, isVideoEnabled);
+                refreshGroupParticipantsStrip();
+            }
         });
 
         binding.btnSpeaker.setOnClickListener(v -> {
@@ -186,6 +253,10 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
             isVideoEnabled = !isVideoEnabled;
             if (webRtcManager != null) webRtcManager.setVideoEnabled(isVideoEnabled);
             binding.btnVideoToggle.setImageResource(isVideoEnabled ? R.drawable.ic_video : R.drawable.ic_videocam_off);
+            if (isGroupCall) {
+                locator.getPeerConnectionManager().updateGroupCallSelfState(callId, groupId, isMuted, isVideoEnabled);
+                refreshGroupParticipantsStrip();
+            }
         });
 
         binding.btnFlipCamera.setOnClickListener(v -> {
@@ -195,9 +266,58 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
         binding.btnPip.setOnClickListener(v -> enterPip());
     }
 
+    private void startIncomingAlert() {
+        try {
+            Uri tone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+            incomingRingtone = RingtoneManager.getRingtone(this, tone);
+            if (incomingRingtone != null) {
+                incomingRingtone.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build());
+                incomingRingtone.play();
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                if (vm != null) incomingVibrator = vm.getDefaultVibrator();
+            } else {
+                incomingVibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (incomingVibrator != null && incomingVibrator.hasVibrator()) {
+                long[] pattern = {0, 600, 800};
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    incomingVibrator.vibrate(VibrationEffect.createWaveform(pattern, 0));
+                } else {
+                    incomingVibrator.vibrate(pattern, 0);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void stopIncomingAlert() {
+        try {
+            if (incomingRingtone != null && incomingRingtone.isPlaying()) {
+                incomingRingtone.stop();
+            }
+        } catch (Exception ignored) {
+        }
+        incomingRingtone = null;
+        try {
+            if (incomingVibrator != null) {
+                incomingVibrator.cancel();
+            }
+        } catch (Exception ignored) {
+        }
+        incomingVibrator = null;
+    }
+
     private void checkMediaPermissionsAndStart() {
         boolean isVideo = callType.contains("VIDEO");
-        java.util.List<String> req = new java.util.ArrayList<>();
+        List<String> req = new ArrayList<>();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             req.add(Manifest.permission.RECORD_AUDIO);
         }
@@ -219,8 +339,12 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
 
     private void startCallEngine() {
         boolean isVideo = callType.contains("VIDEO");
-        CallForegroundService.start(this, peerName, isVideo);
+        String label = isGroupCall && groupName != null && !groupName.isEmpty() ? groupName : peerName;
+        CallForegroundService.start(this, label, isVideo);
         webRtcManager = new WebRtcCallManager(this, locator.getPeerConnectionManager());
+        if (isGroupCall) {
+            webRtcManager.setGroupContext(callId, groupId, callType);
+        }
 
         if (isVideo) {
             binding.localVideoView.init(webRtcManager.getEglContext(), null);
@@ -236,11 +360,51 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
         webRtcManager.setSpeakerphoneOn(isSpeaker);
 
         binding.callStatusText.setText(R.string.call_status_connecting);
-        if (isIncoming) {
+
+        if (isGroupCall) {
+            callConnected = true;
+            connectedAtMs = System.currentTimeMillis();
+            finalStatus = "COMPLETED";
+            timerHandler.post(timerRunnable);
+
+            locator.getPeerConnectionManager().startOrJoinGroupCall(
+                    callId, groupId, groupName, callType, isMuted, isVideoEnabled);
+
+            PeerConnectionManager.GroupCallRoom room = locator.getPeerConnectionManager().getActiveGroupCallForGroup(groupId);
+            if (room != null) {
+                for (NetPacket.GroupCallParticipantDto p : room.participants.values()) {
+                    if (p.deviceId != null && !p.deviceId.equals(myDeviceId) && !webRtcManager.hasPeer(p.deviceId)) {
+                        if (myDeviceId.compareTo(p.deviceId) < 0) {
+                            webRtcManager.startOutgoingCall(callId, p.deviceId, callType);
+                        }
+                    }
+                }
+            }
+            refreshGroupParticipantsStrip();
+        } else if (isIncoming) {
             webRtcManager.acceptIncomingCall(callId, peerId, callType, offerSdp);
         } else {
             webRtcManager.startOutgoingCall(callId, peerId, callType);
         }
+    }
+
+    private void refreshGroupParticipantsStrip() {
+        if (!isGroupCall || binding == null) return;
+        PeerConnectionManager.GroupCallRoom room = locator.getPeerConnectionManager().getActiveGroupCallForGroup(groupId);
+        if (room == null || room.participants.isEmpty()) {
+            binding.callParticipantsStrip.setText("Group Call • Waiting for participants (max 6)");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(room.participants.size()).append("/").append(PeerConnectionManager.MAX_GROUP_CALL_PARTICIPANTS).append(" in call: ");
+        int idx = 0;
+        for (NetPacket.GroupCallParticipantDto p : room.participants.values()) {
+            if (idx > 0) sb.append(", ");
+            sb.append(p.displayName != null ? p.displayName : "Peer");
+            if (p.muted) sb.append(" (muted)");
+            idx++;
+        }
+        binding.callParticipantsStrip.setText(sb.toString());
     }
 
     private void enterPip() {
@@ -267,9 +431,24 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
                 binding.callStatusText.setText(R.string.call_status_ringing);
                 break;
             case NetPacket.TYPE_CALL_BUSY:
+                stopIncomingAlert();
+                timerHandler.removeCallbacks(noAnswerTimeoutRunnable);
                 finalStatus = "BUSY";
-                Toast.makeText(this, R.string.call_status_busy, Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, pkt.reason != null ? pkt.reason : getString(R.string.call_status_busy), Toast.LENGTH_SHORT).show();
                 finish();
+                break;
+            case NetPacket.TYPE_CALL_REJECT:
+                stopIncomingAlert();
+                timerHandler.removeCallbacks(noAnswerTimeoutRunnable);
+                finalStatus = "REJECTED";
+                Toast.makeText(this, R.string.call_status_rejected, Toast.LENGTH_SHORT).show();
+                finish();
+                break;
+            case NetPacket.TYPE_CALL_OFFER:
+                if (isGroupCall && webRtcManager != null && pkt.senderId != null
+                        && !pkt.senderId.equals(myDeviceId) && pkt.sdp != null) {
+                    webRtcManager.acceptIncomingCall(callId, pkt.senderId, callType, pkt.sdp);
+                }
                 break;
             case NetPacket.TYPE_CALL_ANSWER:
                 if (webRtcManager != null) webRtcManager.handleRemoteAnswer(pkt.senderId, pkt.sdp);
@@ -280,8 +459,38 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
                 }
                 break;
             case NetPacket.TYPE_CALL_END:
-                finalStatus = callConnected ? "COMPLETED" : "MISSED";
-                finish();
+                stopIncomingAlert();
+                timerHandler.removeCallbacks(noAnswerTimeoutRunnable);
+                if (!isGroupCall) {
+                    finalStatus = callConnected ? "COMPLETED" : "MISSED";
+                    finish();
+                } else if (webRtcManager != null && pkt.senderId != null) {
+                    webRtcManager.removePeer(pkt.senderId);
+                    refreshGroupParticipantsStrip();
+                }
+                break;
+            case NetPacket.TYPE_GROUP_CALL_INVITE:
+            case NetPacket.TYPE_GROUP_CALL_JOIN:
+                if (isGroupCall) {
+                    refreshGroupParticipantsStrip();
+                    if (webRtcManager != null && pkt.senderId != null
+                            && !pkt.senderId.equals(myDeviceId)
+                            && !webRtcManager.hasPeer(pkt.senderId)
+                            && myDeviceId.compareTo(pkt.senderId) < 0) {
+                        webRtcManager.startOutgoingCall(callId, pkt.senderId, callType);
+                    }
+                }
+                break;
+            case NetPacket.TYPE_GROUP_CALL_STATE:
+                if (isGroupCall) refreshGroupParticipantsStrip();
+                break;
+            case NetPacket.TYPE_GROUP_CALL_LEAVE:
+                if (isGroupCall) {
+                    if (webRtcManager != null && pkt.senderId != null) {
+                        webRtcManager.removePeer(pkt.senderId);
+                    }
+                    refreshGroupParticipantsStrip();
+                }
                 break;
         }
     }
@@ -289,6 +498,7 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
     @Override
     public void onRemoteVideoTrack(String remotePeerId, VideoTrack track) {
         runOnUiThread(() -> {
+            if (binding == null) return;
             binding.remoteVideoView.setVisibility(View.VISIBLE);
             track.addSink(binding.remoteVideoView);
         });
@@ -297,25 +507,42 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
     @Override
     public void onPeerConnected(String remotePeerId) {
         runOnUiThread(() -> {
-            callConnected = true;
+            if (binding == null) return;
+            timerHandler.removeCallbacks(noAnswerTimeoutRunnable);
+            if (!callConnected) {
+                callConnected = true;
+                connectedAtMs = System.currentTimeMillis();
+                timerHandler.post(timerRunnable);
+            }
             finalStatus = "COMPLETED";
-            connectedAtMs = System.currentTimeMillis();
             binding.callStatusText.setText(R.string.call_status_connected);
-            timerHandler.post(timerRunnable);
+            if (isGroupCall) refreshGroupParticipantsStrip();
         });
     }
 
     @Override
     public void onPeerDisconnected(String remotePeerId) {
         runOnUiThread(() -> {
-            finalStatus = callConnected ? "COMPLETED" : "MISSED";
-            finish();
+            if (!isGroupCall) {
+                finalStatus = callConnected ? "COMPLETED" : "MISSED";
+                finish();
+            } else {
+                if (webRtcManager != null) webRtcManager.removePeer(remotePeerId);
+                refreshGroupParticipantsStrip();
+            }
         });
     }
 
-    private void sendEndSignal() {
+    private void sendEndSignal(boolean isExplicitReject) {
+        if (endSignalSent) return;
+        endSignalSent = true;
+        if (isGroupCall) {
+            locator.getPeerConnectionManager().leaveGroupCall(callId, groupId);
+            return;
+        }
         if (peerId == null) return;
-        NetPacket end = locator.getPeerConnectionManager().buildBasePacket(NetPacket.TYPE_CALL_END);
+        NetPacket end = locator.getPeerConnectionManager().buildBasePacket(
+                isExplicitReject ? NetPacket.TYPE_CALL_REJECT : NetPacket.TYPE_CALL_END);
         end.targetId = peerId;
         end.callId = callId;
         locator.getPeerConnectionManager().sendPacketToPeer(peerId, end);
@@ -323,16 +550,23 @@ public class CallActivity extends AppCompatActivity implements PeerConnectionMan
 
     @Override
     protected void onDestroy() {
+        stopIncomingAlert();
         timerHandler.removeCallbacks(timerRunnable);
+        timerHandler.removeCallbacks(noAnswerTimeoutRunnable);
         locator.getPeerConnectionManager().setCallSignalListener(null);
+        if (!endSignalSent && isFinishing()) {
+            sendEndSignal(false);
+        }
         CallForegroundService.stop(this);
 
         long durationSec = callConnected ? (System.currentTimeMillis() - connectedAtMs) / 1000L : 0L;
         String dir = isIncoming ? (callConnected ? "INCOMING" : "MISSED") : "OUTGOING";
-        if (peerId != null) {
+        String logPeerId = isGroupCall ? groupId : peerId;
+        String logPeerName = isGroupCall && groupName != null ? groupName : (peerName != null ? peerName : "Peer");
+        if (logPeerId != null) {
             AppDatabase.DB_EXECUTOR.execute(() -> locator.getDatabase().callLogDao().upsert(
-                    new CallLogEntity(callId, peerId, peerName != null ? peerName : "Peer",
-                            peerIp, callType, dir, finalStatus, durationSec, System.currentTimeMillis())
+                    new CallLogEntity(callId, logPeerId, logPeerName,
+                            peerIp != null ? peerIp : "", callType, dir, finalStatus, durationSec, System.currentTimeMillis())
             ));
         }
 

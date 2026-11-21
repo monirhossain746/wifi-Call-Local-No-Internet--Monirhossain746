@@ -180,6 +180,7 @@
     <string name="call_status_busy">User is busy</string>
     <string name="call_status_missed">Missed call</string>
     <string name="call_status_rejected">Call declined</string>
+    <string name="call_status_no_answer">No answer</string>
     <string name="call_incoming_voice">Incoming Local Voice Call</string>
     <string name="call_incoming_video">Incoming Local Video Call</string>
     <string name="call_accept">Accept</string>
@@ -229,6 +230,7 @@
     <string name="stat_projects">700+ Projects</string>
     <string name="stat_countries">30+ Countries</string>
     <string name="btn_visit_portfolio">Visit Portfolio Website</string>
+    <string name="btn_github_repository">GitHub Repository</string>
     <string name="btn_facebook">Facebook</string>
     <string name="btn_contact_developer">Contact Developer</string>
 
@@ -263,9 +265,9 @@
     <string name="preview_thumbnail_badge">Preview only • Tap Download for original</string>
     <string name="image_count_format">%1$d / %2$d</string>
 
-    <!-- AdMob Adaptive Banner Config (Replace with your production AdMob IDs) -->
-    <string name="admob_app_id" translatable="false">ca-app-pub-3940256099942544~3347511713</string>
-    <string name="admob_adaptive_banner_unit_id" translatable="false">ca-app-pub-3940256099942544/9214589741</string>
+    <!-- AdMob Adaptive Banner Config (Production IDs restored) -->
+    <string name="admob_app_id" translatable="false">ca-app-pub-3181872815781744~9879947642</string>
+    <string name="admob_adaptive_banner_unit_id" translatable="false">ca-app-pub-3181872815781744/1818458941</string>
 
     <!-- Firebase Remote Config: Kill Switch & Force Update -->
     <string name="app_disabled_title">App Unavailable</string>
@@ -275,6 +277,8 @@
     <string name="btn_check_again">Check Status</string>
     <string name="force_update_title">New Update Available</string>
     <string name="force_update_default_msg">A required update is available. Please update to continue using Wifi Call Local.</string>
+    <string name="optional_update_title">Update Available</string>
+    <string name="maintenance_mode_title">Maintenance Notice</string>
     <string name="btn_update_now">Update Now</string>
     <string name="update_downloading">Downloading update package…</string>
     <string name="update_verifying">Verifying APK signature and version…</string>
@@ -283,11 +287,14 @@
     <string name="update_verify_failed">Update rejected: downloaded APK signature or version verification failed.</string>
     <string name="update_download_failed">Update download failed. Please check your connection and try again.</string>
 
-    <!-- Settings App Update Card -->
+    <!-- Settings App Update Card & Manual Update -->
     <string name="settings_app_update_title">App Update</string>
     <string name="btn_check_update">Check Update</string>
+    <string name="btn_manual_update">Manual Update</string>
+    <string name="settings_manual_update_subtitle">Visit the official GitHub repository for the latest application release.</string>
+    <string name="error_no_browser_github">No browser or GitHub app found to open the repository link.</string>
     <string name="settings_installed_version_format">Installed Version: v%1$s (Build %2$d)</string>
-    <string name="settings_latest_version_format">Latest Available: Build %1$d</string>
+    <string name="settings_latest_version_format">Latest Available: v%1$s (Build %2$d)</string>
     <string name="settings_update_up_to_date">You are using the latest version.</string>
     <string name="settings_update_available_format">Update available (Build %1$d). Tap Update Now to download and install.</string>
     <string name="settings_update_checking">Checking remote config for updates…</string>
@@ -295,4 +302,29 @@
     <string name="settings_update_badge_available">Update Available</string>
     <string name="settings_update_ready_install">APK verified. Launching Android package installer…</string>
     <string name="settings_update_offline_fallback">Cached version shown (offline or Firebase config not active).</string>
+
+    <!-- Storage & Cache Management -->
+    <string name="settings_section_storage_cache">Storage &amp; Cache</string>
+    <string name="settings_current_cache_format">Current Cache Size: %1$s</string>
+    <string name="settings_max_cache_format">Maximum Cache Size: %1$d MB (auto LRU cleanup)</string>
+    <string name="btn_clear_all_cache">Clear All Cache</string>
+    <string name="clear_cache_confirm_title">Clear Temporary Cache?</string>
+    <string name="clear_cache_confirm_message">This clears temporary image/update caches and completed transfer chunks.\n\nPreserved safely: messages, groups, saved contacts, Room database, and files saved in Downloads/WifiCallLocal/.</string>
+    <string name="clear_cache_done_format">Cleared %1$s of temporary cache. Messages and saved downloads remain safe.</string>
+
+    <!-- Live Diagnostics & Feature Flags -->
+    <string name="settings_section_firebase_status">Application Status — Firebase</string>
+    <string name="settings_section_admob_status">Application Status — AdMob</string>
+    <string name="settings_section_comm_status">Communication Status</string>
+    <string name="feature_disabled_remote">Disabled temporarily via Remote Config.</string>
+
+    <!-- Message Editing & Group Calls -->
+    <string name="action_edit_message">Edit message</string>
+    <string name="edit_message_title">Edit Message</string>
+    <string name="msg_edited_tag">(edited)</string>
+    <string name="group_voice_call">Group Voice</string>
+    <string name="group_video_call">Group Video</string>
+    <string name="active_group_call_join">Active Group Call • Tap to Join (%1$d)</string>
+    <string name="group_demote_admin">Demote to member</string>
+    <string name="view_profile">View Profile</string>
 </resources>

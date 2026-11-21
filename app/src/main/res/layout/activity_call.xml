@@ -71,6 +71,19 @@
             android:textSize="14sp" />
 
         <TextView
+            android:id="@+id/call_participants_strip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_badge_pill"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="5dp"
+            android:textColor="@color/cyan_400"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/call_lan_note"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

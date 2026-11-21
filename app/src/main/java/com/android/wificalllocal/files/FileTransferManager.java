@@ -528,6 +528,11 @@ public class FileTransferManager {
                 }
             }
             db.fileTransferDao().updateProgress(transferId, "COMPLETED", manifest.totalChunks, 0L, savedPath, System.currentTimeMillis());
+            try {
+                com.android.wificalllocal.ServiceLocator loc = com.android.wificalllocal.ServiceLocator.getInstance(context);
+                loc.getCacheManager().enforceCacheLimitAsync(loc.getAppControlManager().getLastState().maxCacheSizeMb);
+            } catch (Exception ignored) {
+            }
             return true;
         } catch (Exception e) {
             db.fileTransferDao().updateProgress(transferId, "FAILED", completed, 0L, null, System.currentTimeMillis());

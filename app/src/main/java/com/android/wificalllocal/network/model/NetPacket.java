@@ -10,6 +10,7 @@ public class NetPacket {
     public static final String TYPE_CHAT_MESSAGE = "CHAT_MESSAGE";
     public static final String TYPE_MESSAGE_RECEIPT = "MESSAGE_RECEIPT";
     public static final String TYPE_MESSAGE_REACTION = "MESSAGE_REACTION";
+    public static final String TYPE_MESSAGE_EDIT = "MESSAGE_EDIT";
     public static final String TYPE_MESSAGE_DELETE = "MESSAGE_DELETE";
     public static final String TYPE_TYPING = "TYPING";
     public static final String TYPE_SYNC_SUMMARY = "SYNC_SUMMARY";
@@ -59,6 +60,8 @@ public class NetPacket {
     public String status;
     public String emoji;
     public String emojiAction; // ADD, REMOVE
+    public String newContent;
+    public long editedAt;
     public boolean typing;
 
     public MessageDto message;
@@ -127,6 +130,8 @@ public class NetPacket {
         public String reactionsJson;
         public boolean isEncrypted;
         public String thumbnailBase64;
+        public boolean isEdited;
+        public long editedAt;
     }
 
     public static class GroupDto {

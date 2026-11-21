@@ -54,6 +54,9 @@ public interface MessageDao {
     @Query("UPDATE messages SET isDeletedForEveryone = 1, content = '' WHERE messageId = :messageId")
     void deleteForEveryone(String messageId);
 
+    @Query("UPDATE messages SET content = :content, isEdited = 1, editedAt = :editedAt WHERE messageId = :messageId")
+    void editMessage(String messageId, String content, long editedAt);
+
     @Query("UPDATE messages SET reactionsJson = :reactionsJson WHERE messageId = :messageId")
     void updateReactions(String messageId, String reactionsJson);
 

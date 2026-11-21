@@ -15,6 +15,7 @@ import android.text.TextWatcher;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.PopupMenu;
 import android.widget.Toast;
 
@@ -30,12 +31,16 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 
 import com.android.wificalllocal.R;
 import com.android.wificalllocal.ServiceLocator;
+import com.android.wificalllocal.control.AppControlManager;
 import com.android.wificalllocal.data.local.AppDatabase;
 import com.android.wificalllocal.data.local.entity.ChatEntity;
 import com.android.wificalllocal.data.local.entity.FileTransferEntity;
+import com.android.wificalllocal.data.local.entity.GroupEntity;
 import com.android.wificalllocal.data.local.entity.GroupMemberEntity;
 import com.android.wificalllocal.data.local.entity.MessageEntity;
+import com.android.wificalllocal.data.local.entity.PeerEntity;
 import com.android.wificalllocal.databinding.FragmentChatDetailBinding;
+import com.android.wificalllocal.network.PeerConnectionManager;
 import com.android.wificalllocal.ui.ChatDetailViewModel;
 import com.android.wificalllocal.ui.MainActivity;
 import com.android.wificalllocal.ui.adapter.MessageAdapter;
@@ -46,6 +51,7 @@ import com.google.gson.reflect.TypeToken;
 
 import java.io.File;
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -65,6 +71,9 @@ public class ChatDetailFragment extends Fragment {
     private String chatTitle;
     private String peerId;
     private boolean isGroup;
+    private boolean isGroupAdminOrOwner = false;
+    private PeerEntity currentDmPeer;
+    private GroupEntity currentGroup;
     private MessageEntity pendingReply;
 
     private MediaRecorder recorder;
@@ -119,8 +128,12 @@ public class ChatDetailFragment extends Fragment {
 
         binding.chatTitle.setText(chatTitle);
         binding.chatSubtitle.setText(isGroup ? "Local Group" : "Direct Peer");
-        binding.btnChatVoiceCall.setVisibility(isGroup ? View.GONE : View.VISIBLE);
-        binding.btnChatVideoCall.setVisibility(isGroup ? View.GONE : View.VISIBLE);
+
+        AppControlManager.AppGateState gate = locator.getAppControlManager().getLastState();
+        boolean groupCallsAllowed = gate == null || gate.groupCallsEnabled;
+        int callVis = (!isGroup || groupCallsAllowed) ? View.VISIBLE : View.GONE;
+        binding.btnChatVoiceCall.setVisibility(callVis);
+        binding.btnChatVideoCall.setVisibility(callVis);
 
         String myId = locator.getPreferencesManager().getOrCreateDeviceId();
         adapter = new MessageAdapter(myId, locator.getFileTransferManager(), new MessageAdapter.Listener() {
@@ -210,14 +223,45 @@ public class ChatDetailFragment extends Fragment {
         if (isGroup) {
             viewModel.observeGroup().observe(getViewLifecycleOwner(), group -> {
                 if (group != null) {
+                    currentGroup = group;
+                    chatTitle = group.name;
                     binding.chatTitle.setText(group.name);
                     binding.chatSubtitle.setText(getString(R.string.group_members_online, group.memberCount, group.onlineCount));
-                    if (group.adminsOnlySend) {
-                        checkAdminSendRestriction(myId);
-                    } else {
-                        binding.adminsOnlyNotice.setVisibility(View.GONE);
-                        binding.composerBar.setVisibility(View.VISIBLE);
+                    if (myId.equals(group.ownerId)) {
+                        isGroupAdminOrOwner = true;
                     }
+                    updateComposerForAdminRestriction(group);
+                }
+            });
+            viewModel.observeGroupMembers().observe(getViewLifecycleOwner(), members -> {
+                boolean admin = currentGroup != null && myId.equals(currentGroup.ownerId);
+                if (!admin && members != null) {
+                    for (GroupMemberEntity gm : members) {
+                        if (myId.equals(gm.deviceId) && ("OWNER".equalsIgnoreCase(gm.role) || "ADMIN".equalsIgnoreCase(gm.role))) {
+                            admin = true;
+                            break;
+                        }
+                    }
+                }
+                isGroupAdminOrOwner = admin;
+                if (currentGroup != null) {
+                    updateComposerForAdminRestriction(currentGroup);
+                }
+            });
+            refreshActiveGroupCallBanner();
+            locator.getPeerConnectionManager().setActiveGroupCallListener(() -> {
+                if (isAdded() && binding != null) {
+                    refreshActiveGroupCallBanner();
+                }
+            });
+        } else {
+            viewModel.observePeer().observe(getViewLifecycleOwner(), peer -> {
+                currentDmPeer = peer;
+                if (peer != null && binding != null) {
+                    binding.chatTitle.setText(peer.name);
+                    String origin = peer.isWebUser ? "Web Browser" : peer.connectionMode;
+                    String status = peer.isOnline ? peer.activeStatus : "OFFLINE";
+                    binding.chatSubtitle.setText(status + " • " + origin + " • " + peer.ipAddress);
                 }
             });
         }
@@ -225,44 +269,78 @@ public class ChatDetailFragment extends Fragment {
         setupListeners();
     }
 
-    private void checkAdminSendRestriction(String myId) {
-        viewModel.observeGroupMembers().observe(getViewLifecycleOwner(), members -> {
-            boolean isAdmin = false;
-            if (members != null) {
-                for (GroupMemberEntity gm : members) {
-                    if (myId.equals(gm.deviceId) && ("OWNER".equals(gm.role) || "ADMIN".equals(gm.role))) {
-                        isAdmin = true;
-                        break;
-                    }
-                }
-            }
-            binding.adminsOnlyNotice.setVisibility(isAdmin ? View.GONE : View.VISIBLE);
-            binding.composerBar.setVisibility(isAdmin ? View.VISIBLE : View.GONE);
-        });
+    private void updateComposerForAdminRestriction(GroupEntity group) {
+        if (binding == null) return;
+        if (group.adminsOnlySend) {
+            binding.adminsOnlyNotice.setVisibility(isGroupAdminOrOwner ? View.GONE : View.VISIBLE);
+            binding.composerBar.setVisibility(isGroupAdminOrOwner ? View.VISIBLE : View.GONE);
+        } else {
+            binding.adminsOnlyNotice.setVisibility(View.GONE);
+            binding.composerBar.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void refreshActiveGroupCallBanner() {
+        if (!isGroup || binding == null) return;
+        AppControlManager.AppGateState gate = locator.getAppControlManager().getLastState();
+        if (gate != null && !gate.groupCallsEnabled) {
+            binding.activeGroupCallBanner.setVisibility(View.GONE);
+            return;
+        }
+        PeerConnectionManager.GroupCallRoom room = locator.getPeerConnectionManager().getActiveGroupCallForGroup(chatId);
+        if (room != null && !room.participants.isEmpty()) {
+            binding.activeGroupCallBanner.setVisibility(View.VISIBLE);
+            binding.activeGroupCallText.setText(getString(R.string.active_group_call_join, room.participants.size()));
+            binding.btnJoinActiveGroupCall.setOnClickListener(v ->
+                    ((MainActivity) requireActivity()).startGroupCall(room.callId, chatId, chatTitle, room.callType));
+        } else {
+            binding.activeGroupCallBanner.setVisibility(View.GONE);
+        }
     }
 
     private void setupListeners() {
         binding.btnChatBack.setOnClickListener(v -> ((MainActivity) requireActivity()).popCurrentTab());
         binding.chatHeaderTitleArea.setOnClickListener(v -> {
-            if (isGroup) ((MainActivity) requireActivity()).openGroupInfo(chatId);
+            if (isGroup) {
+                ((MainActivity) requireActivity()).openGroupInfo(chatId);
+            } else if (currentDmPeer != null) {
+                ((MainActivity) requireActivity()).openPeerProfile(currentDmPeer);
+            }
         });
 
         binding.btnChatVoiceCall.setOnClickListener(v -> {
-            if (peerId != null) ((MainActivity) requireActivity()).startOutgoingCall(peerId, chatTitle, "", "VOICE");
+            if (isGroup) {
+                PeerConnectionManager.GroupCallRoom existing = locator.getPeerConnectionManager().getActiveGroupCallForGroup(chatId);
+                ((MainActivity) requireActivity()).startGroupCall(
+                        existing != null ? existing.callId : null, chatId, chatTitle, "GROUP_VOICE");
+            } else if (peerId != null) {
+                ((MainActivity) requireActivity()).startOutgoingCall(peerId, chatTitle, "", "VOICE");
+            }
         });
         binding.btnChatVideoCall.setOnClickListener(v -> {
-            if (peerId != null) ((MainActivity) requireActivity()).startOutgoingCall(peerId, chatTitle, "", "VIDEO");
+            if (isGroup) {
+                PeerConnectionManager.GroupCallRoom existing = locator.getPeerConnectionManager().getActiveGroupCallForGroup(chatId);
+                ((MainActivity) requireActivity()).startGroupCall(
+                        existing != null ? existing.callId : null, chatId, chatTitle, "GROUP_VIDEO");
+            } else if (peerId != null) {
+                ((MainActivity) requireActivity()).startOutgoingCall(peerId, chatTitle, "", "VIDEO");
+            }
         });
 
         binding.btnChatMenu.setOnClickListener(v -> {
             PopupMenu popup = new PopupMenu(requireContext(), v);
-            if (isGroup) popup.getMenu().add(0, 1, 0, R.string.action_group_info);
+            if (isGroup) {
+                popup.getMenu().add(0, 1, 0, R.string.action_group_info);
+            } else if (currentDmPeer != null) {
+                popup.getMenu().add(0, 5, 0, R.string.view_profile);
+            }
             popup.getMenu().add(0, 2, 1, R.string.search);
             popup.getMenu().add(0, 3, 2, R.string.action_clear_chat);
             popup.getMenu().add(0, 4, 3, R.string.action_delete_chat);
             popup.setOnMenuItemClickListener(item -> {
                 int id = item.getItemId();
                 if (id == 1) ((MainActivity) requireActivity()).openGroupInfo(chatId);
+                else if (id == 5 && currentDmPeer != null) ((MainActivity) requireActivity()).openPeerProfile(currentDmPeer);
                 else if (id == 2) binding.chatSearchBar.setVisibility(View.VISIBLE);
                 else if (id == 3) viewModel.clearChat();
                 else if (id == 4) {
@@ -312,9 +390,21 @@ public class ChatDetailFragment extends Fragment {
             binding.replyPreviewBar.setVisibility(View.GONE);
         });
 
-        binding.btnAttach.setOnClickListener(v -> showAttachChooser());
+        binding.btnAttach.setOnClickListener(v -> {
+            AppControlManager.AppGateState gate = locator.getAppControlManager().getLastState();
+            if (gate != null && !gate.fileTransferEnabled) {
+                Toast.makeText(requireContext(), R.string.feature_disabled_remote, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            showAttachChooser();
+        });
 
         binding.btnVoiceNote.setOnClickListener(v -> {
+            AppControlManager.AppGateState gate = locator.getAppControlManager().getLastState();
+            if (gate != null && !gate.fileTransferEnabled) {
+                Toast.makeText(requireContext(), R.string.feature_disabled_remote, Toast.LENGTH_SHORT).show();
+                return;
+            }
             if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {
                 toggleVoiceRecording();
@@ -434,31 +524,68 @@ public class ChatDetailFragment extends Fragment {
     private void showMessageOptions(MessageEntity msg) {
         String myId = locator.getPreferencesManager().getOrCreateDeviceId();
         boolean isMine = myId.equals(msg.senderId);
-        String[] actions = isMine
-                ? new String[]{getString(R.string.action_react), getString(R.string.action_reply),
-                getString(R.string.action_forward), getString(R.string.copy),
-                getString(R.string.action_delete_for_me), getString(R.string.action_delete_for_everyone)}
-                : new String[]{getString(R.string.action_react), getString(R.string.action_reply),
-                getString(R.string.action_forward), getString(R.string.copy),
-                getString(R.string.action_delete_for_me)};
+        boolean canEdit = isMine && "TEXT".equals(msg.type) && !msg.isDeletedForEveryone;
+        boolean canDeleteEveryone = !msg.isDeletedForEveryone && (isMine || (isGroup && isGroupAdminOrOwner));
+
+        List<String> labels = new ArrayList<>();
+        List<Runnable> runners = new ArrayList<>();
+
+        labels.add(getString(R.string.action_react));
+        runners.add(() -> showEmojiPicker(msg));
+
+        labels.add(getString(R.string.action_reply));
+        runners.add(() -> {
+            pendingReply = msg;
+            binding.replyPreviewBar.setVisibility(View.VISIBLE);
+            binding.replyPreviewText.setText(getString(R.string.replying_to, msg.senderName) + ": " + msg.content);
+        });
+
+        if (canEdit) {
+            labels.add(getString(R.string.action_edit_message));
+            runners.add(() -> showEditMessageDialog(msg));
+        }
+
+        labels.add(getString(R.string.action_forward));
+        runners.add(() -> showForwardDialog(msg));
+
+        labels.add(getString(R.string.copy));
+        runners.add(() -> {
+            ClipboardManager cm = (ClipboardManager) requireContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("Message", msg.content));
+                Toast.makeText(requireContext(), R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        labels.add(getString(R.string.action_delete_for_me));
+        runners.add(() -> viewModel.deleteForMe(msg.messageId));
+
+        if (canDeleteEveryone) {
+            labels.add(getString(R.string.action_delete_for_everyone));
+            runners.add(() -> viewModel.deleteForEveryone(msg.messageId));
+        }
 
         new MaterialAlertDialogBuilder(requireContext())
-                .setItems(actions, (d, which) -> {
-                    if (which == 0) showEmojiPicker(msg);
-                    else if (which == 1) {
-                        pendingReply = msg;
-                        binding.replyPreviewBar.setVisibility(View.VISIBLE);
-                        binding.replyPreviewText.setText(getString(R.string.replying_to, msg.senderName) + ": " + msg.content);
-                    } else if (which == 2) showForwardDialog(msg);
-                    else if (which == 3) {
-                        ClipboardManager cm = (ClipboardManager) requireContext().getSystemService(Context.CLIPBOARD_SERVICE);
-                        if (cm != null) {
-                            cm.setPrimaryClip(ClipData.newPlainText("Message", msg.content));
-                            Toast.makeText(requireContext(), R.string.copied_to_clipboard, Toast.LENGTH_SHORT).show();
-                        }
-                    } else if (which == 4) viewModel.deleteForMe(msg.messageId);
-                    else if (which == 5 && isMine) viewModel.deleteForEveryone(msg.messageId);
+                .setItems(labels.toArray(new String[0]), (d, which) -> runners.get(which).run())
+                .show();
+    }
+
+    private void showEditMessageDialog(MessageEntity msg) {
+        EditText input = new EditText(requireContext());
+        input.setText(msg.content);
+        int pad = Math.round(18 * getResources().getDisplayMetrics().density);
+        input.setPadding(pad, pad / 2, pad, pad / 2);
+
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.edit_message_title)
+                .setView(input)
+                .setPositiveButton(R.string.save, (d, w) -> {
+                    String updated = input.getText().toString().trim();
+                    if (!updated.isEmpty() && !updated.equals(msg.content)) {
+                        viewModel.editMessage(msg.messageId, updated);
+                    }
                 })
+                .setNegativeButton(R.string.cancel, null)
                 .show();
     }
 
@@ -520,6 +647,7 @@ public class ChatDetailFragment extends Fragment {
     public void onResume() {
         super.onResume();
         locator.getPeerConnectionManager().setActiveChatId(chatId);
+        if (isGroup) refreshActiveGroupCallBanner();
     }
 
     @Override
@@ -531,6 +659,7 @@ public class ChatDetailFragment extends Fragment {
     @Override
     public void onDestroyView() {
         locator.getPeerConnectionManager().setTypingListener(null);
+        locator.getPeerConnectionManager().setActiveGroupCallListener(null);
         if (voicePlayer != null) {
             voicePlayer.release();
             voicePlayer = null;

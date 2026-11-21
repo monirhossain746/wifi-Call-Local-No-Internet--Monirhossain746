@@ -23,6 +23,7 @@ public class NearbyPeerAdapter extends RecyclerView.Adapter<NearbyPeerAdapter.VH
         void onVideoCall(PeerEntity peer);
         void onToggleFriend(PeerEntity peer);
         void onBlock(PeerEntity peer);
+        void onViewProfile(PeerEntity peer);
     }
 
     private final List<PeerEntity> items = new ArrayList<>();
@@ -57,9 +58,10 @@ public class NearbyPeerAdapter extends RecyclerView.Adapter<NearbyPeerAdapter.VH
         HomePeerAdapter.applyStatusDot(h.b.nearbyStatusDot, p);
 
         h.b.btnPeerFriend.setText(p.isFriend ? R.string.btn_remove_friend : R.string.btn_add_friend);
-        h.b.btnPeerVoice.setEnabled(!p.isWebUser);
-        h.b.btnPeerVideo.setEnabled(!p.isWebUser);
+        h.b.btnPeerVoice.setEnabled(p.isOnline);
+        h.b.btnPeerVideo.setEnabled(p.isOnline);
 
+        h.itemView.setOnClickListener(v -> listener.onViewProfile(p));
         h.b.btnPeerChat.setOnClickListener(v -> listener.onChat(p));
         h.b.btnPeerVoice.setOnClickListener(v -> listener.onVoiceCall(p));
         h.b.btnPeerVideo.setOnClickListener(v -> listener.onVideoCall(p));

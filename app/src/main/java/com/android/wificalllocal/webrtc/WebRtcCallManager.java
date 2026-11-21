@@ -59,6 +59,7 @@ public class WebRtcCallManager {
     private final Map<String, PeerConnection> peerConnections = new ConcurrentHashMap<>();
     private CallEvents events;
     private String activeCallId;
+    private String activeGroupId;
     private String activeCallType;
     private boolean audioMuted = false;
     private boolean videoEnabled = true;
@@ -66,6 +67,28 @@ public class WebRtcCallManager {
     public WebRtcCallManager(Context context, PeerConnectionManager signaling) {
         this.context = context.getApplicationContext();
         this.signaling = signaling;
+    }
+
+    public void setGroupContext(String callId, String groupId, String callType) {
+        this.activeCallId = callId;
+        this.activeGroupId = groupId;
+        this.activeCallType = callType;
+    }
+
+    public boolean hasPeer(String peerId) {
+        return peerId != null && peerConnections.containsKey(peerId);
+    }
+
+    public void removePeer(String peerId) {
+        if (peerId == null) return;
+        PeerConnection pc = peerConnections.remove(peerId);
+        if (pc != null) {
+            try {
+                pc.close();
+                pc.dispose();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public EglBase.Context getEglContext() {
@@ -129,6 +152,7 @@ public class WebRtcCallManager {
                 NetPacket offer = signaling.buildBasePacket(NetPacket.TYPE_CALL_OFFER);
                 offer.targetId = peerId;
                 offer.callId = callId;
+                offer.groupId = activeGroupId;
                 offer.callType = callType;
                 offer.sdp = sdp.description;
                 signaling.sendPacketToPeer(peerId, offer);
@@ -157,6 +181,7 @@ public class WebRtcCallManager {
                         NetPacket ans = signaling.buildBasePacket(NetPacket.TYPE_CALL_ANSWER);
                         ans.targetId = peerId;
                         ans.callId = callId;
+                        ans.groupId = activeGroupId;
                         ans.callType = callType;
                         ans.sdp = answerSdp.description;
                         signaling.sendPacketToPeer(peerId, ans);
@@ -282,6 +307,7 @@ public class WebRtcCallManager {
                 NetPacket ice = signaling.buildBasePacket(NetPacket.TYPE_CALL_ICE);
                 ice.targetId = peerId;
                 ice.callId = activeCallId;
+                ice.groupId = activeGroupId;
                 ice.iceCandidate = iceCandidate.sdp;
                 ice.iceSdpMid = iceCandidate.sdpMid;
                 ice.iceSdpMLineIndex = iceCandidate.sdpMLineIndex;

@@ -113,6 +113,36 @@
         android:textSize="12sp"
         android:visibility="gone" />
 
+    <LinearLayout
+        android:id="@+id/active_group_call_banner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/navy_850"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/active_group_call_text"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="@color/cyan_400"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_join_active_group_call"
+            style="@style/Widget.Material3.Button"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:text="@string/join"
+            android:textColor="@color/navy_950"
+            app:backgroundTint="@color/cyan_500" />
+    </LinearLayout>
+
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/messages_recycler"
         android:layout_width="match_parent"

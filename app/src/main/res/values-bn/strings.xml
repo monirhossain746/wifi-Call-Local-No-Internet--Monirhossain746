@@ -280,8 +280,11 @@
     <!-- Settings App Update Card -->
     <string name="settings_app_update_title">অ্যাপ আপডেট</string>
     <string name="btn_check_update">আপডেট যাচাই</string>
+    <string name="btn_manual_update">ম্যানুয়াল আপডেট</string>
+    <string name="settings_manual_update_subtitle">সর্বশেষ অ্যাপ রিলিজের জন্য অফিসিয়াল GitHub রিপোজিটরি দেখুন।</string>
+    <string name="btn_github_repository">GitHub রিপোজিটরি</string>
     <string name="settings_installed_version_format">ইনস্টলকৃত সংস্করণ: v%1$s (বিল্ড %2$d)</string>
-    <string name="settings_latest_version_format">সর্বশেষ সংস্করণ: বিল্ড %1$d</string>
+    <string name="settings_latest_version_format">সর্বশেষ সংস্করণ: v%1$s (বিল্ড %2$d)</string>
     <string name="settings_update_up_to_date">আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন।</string>
     <string name="settings_update_available_format">নতুন আপডেট পাওয়া গেছে (বিল্ড %1$d)। ইনস্টল করতে এখনই আপডেট চাপুন।</string>
     <string name="settings_update_checking">রিমোট কনফিগ থেকে আপডেট যাচাই হচ্ছে…</string>
@@ -289,4 +292,7 @@
     <string name="settings_update_badge_available">নতুন আপডেট</string>
     <string name="settings_update_ready_install">APK যাচাই সম্পন্ন। অ্যান্ড্রয়েড ইনস্টলার চালু হচ্ছে…</string>
     <string name="settings_update_offline_fallback">ক্যাশ করা সংস্করণ দেখানো হচ্ছে (অফলাইন বা রিমোট কনফিগ নিষ্ক্রিয়)।</string>
+    <string name="btn_clear_all_cache">সব ক্যাশ মুছুন</string>
+    <string name="action_edit_message">মেসেজ সম্পাদনা</string>
+    <string name="msg_edited_tag">(সম্পাদিত)</string>
 </resources>

@@ -147,4 +147,46 @@ public class SettingsAppUpdateUiTest {
         rcm.persistSnapshot(new RemoteConfigManager.ConfigSnapshot(
                 true, BuildConfig.VERSION_CODE, "", "", false));
     }
+
+    @Test
+    public void manualUpdateButtonAndDiagnosticsAndCacheCardsWorkWithoutFirebase() {
+        AppCompatActivity host = launchSettingsHost();
+
+        Button btnManualUpdate = host.findViewById(R.id.btn_manual_update);
+        TextView manualSubtitle = host.findViewById(R.id.settings_manual_update_subtitle);
+        Button btnClearCache = host.findViewById(R.id.btn_clear_all_cache);
+        TextView currentCache = host.findViewById(R.id.settings_current_cache);
+        TextView maxCache = host.findViewById(R.id.settings_max_cache);
+        TextView firebaseStatus = host.findViewById(R.id.settings_firebase_status);
+        TextView admobStatus = host.findViewById(R.id.settings_admob_status);
+        TextView commStatus = host.findViewById(R.id.settings_comm_status);
+
+        assertNotNull(btnManualUpdate);
+        assertEquals(View.VISIBLE, btnManualUpdate.getVisibility());
+        assertEquals(host.getString(R.string.btn_manual_update), btnManualUpdate.getText().toString());
+        assertNotNull(manualSubtitle);
+        assertEquals(host.getString(R.string.settings_manual_update_subtitle), manualSubtitle.getText().toString());
+
+        assertNotNull(btnClearCache);
+        assertEquals(View.VISIBLE, btnClearCache.getVisibility());
+        assertNotNull(currentCache);
+        assertNotNull(maxCache);
+        assertTrue(maxCache.getText().toString().contains("500 MB"));
+
+        assertNotNull(firebaseStatus);
+        assertNotNull(admobStatus);
+        assertNotNull(commStatus);
+        assertTrue(firebaseStatus.getText().toString().contains("wifi-call-local-1"));
+        assertTrue(admobStatus.getText().toString().contains("SDK Init"));
+        assertTrue(commStatus.getText().toString().contains("Internet"));
+
+        btnManualUpdate.performClick();
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+
+        android.content.Intent started = Shadows.shadowOf(host).getNextStartedActivity();
+        assertNotNull("Expected Intent.ACTION_VIEW for GitHub Manual Update", started);
+        assertEquals(android.content.Intent.ACTION_VIEW, started.getAction());
+        assertEquals(SettingsFragment.GITHUB_REPO_URL, String.valueOf(started.getData()));
+    }
 }
+

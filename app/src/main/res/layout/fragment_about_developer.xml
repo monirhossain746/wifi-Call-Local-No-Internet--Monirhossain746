@@ -144,6 +144,14 @@
                     android:layout_marginTop="16dp"
                     android:text="@string/btn_visit_portfolio" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_github_repo"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/btn_github_repository" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

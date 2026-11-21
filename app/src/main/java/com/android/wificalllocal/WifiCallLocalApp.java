@@ -13,9 +13,12 @@ public class WifiCallLocalApp extends Application {
     public void onCreate() {
         super.onCreate();
         ServiceLocator locator = ServiceLocator.getInstance(this);
+        locator.getAppControlManager().getRemoteConfigManager().initialize();
         PreferencesManager prefs = locator.getPreferencesManager();
         applyTheme(prefs.getThemeMode());
         applyLanguage(prefs.getLanguage());
+        long maxMb = locator.getAppControlManager().getCurrentGateState().maxCacheSizeMb;
+        locator.getCacheManager().enforceCacheLimitAsync(maxMb);
     }
 
     public static void applyTheme(String themeMode) {

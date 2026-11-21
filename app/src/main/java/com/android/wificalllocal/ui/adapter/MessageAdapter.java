@@ -64,6 +64,7 @@ public class MessageAdapter extends ListAdapter<MessageEntity, MessageAdapter.VH
                     && Objects.equals(oldItem.thumbnailBase64, newItem.thumbnailBase64)
                     && Objects.equals(oldItem.reactionsJson, newItem.reactionsJson)
                     && oldItem.isDeletedForEveryone == newItem.isDeletedForEveryone
+                    && oldItem.isEdited == newItem.isEdited
                     && oldItem.attachmentSize == newItem.attachmentSize;
         }
     };
@@ -201,7 +202,8 @@ public class MessageAdapter extends ListAdapter<MessageEntity, MessageAdapter.VH
         }
 
         String time = timeFmt.format(new Date(m.createdAt));
-        String meta = isMine ? (time + " • " + m.status) : time;
+        String editedTag = (m.isEdited && !m.isDeletedForEveryone) ? (" " + ctx.getString(R.string.msg_edited_tag)) : "";
+        String meta = (isMine ? (time + " • " + m.status) : time) + editedTag;
         h.b.msgMetaTimeStatus.setText(meta);
         h.b.msgMetaTimeStatus.setTextColor(ContextCompat.getColor(ctx, R.color.blue_200));
 

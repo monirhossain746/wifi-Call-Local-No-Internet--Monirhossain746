@@ -67,6 +67,10 @@ public class ChatDetailViewModel extends AndroidViewModel {
         return db.groupDao().observeMembers(chatId);
     }
 
+    public LiveData<com.android.wificalllocal.data.local.entity.PeerEntity> observePeer() {
+        return peerId != null ? db.peerDao().observeById(peerId) : new MutableLiveData<>(null);
+    }
+
     public void setSearchQuery(String query) {
         searchQuery.setValue(query);
     }
@@ -141,6 +145,10 @@ public class ChatDetailViewModel extends AndroidViewModel {
             );
             locator.getPeerConnectionManager().sendMessage(targetChatId, targetPeerId, fwd, null);
         });
+    }
+
+    public void editMessage(String messageId, String newContent) {
+        locator.getPeerConnectionManager().sendMessageEdit(chatId, messageId, newContent);
     }
 
     public void deleteForMe(String messageId) {

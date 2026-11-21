@@ -9,8 +9,9 @@ import com.android.wificalllocal.service.LocalMeshService;
 import com.android.wificalllocal.ui.blocked.AppBlockedActivity;
 
 /**
- * Evaluates Firebase Remote Config kill switch & force-update rules cleanly outside Activities.
- * Enforces immediate blocking of calls/messaging/UI when disabled or outdated.
+ * Evaluates Firebase Remote Config kill switch, maintenance mode, force/optional updates,
+ * and feature flags cleanly outside Activities while keeping local offline WiFi features
+ * available unless explicitly disabled via is_app_enabled == false or mandatory force update.
  */
 public class AppControlManager {
 
@@ -23,21 +24,60 @@ public class AppControlManager {
     public static class AppGateState {
         public final AccessDecision decision;
         public final long latestVersionCode;
+        public final String latestVersionName;
         public final String updateLink;
         public final String updateMessage;
+        public final boolean forceUpdate;
+        public final boolean maintenanceMode;
+        public final String maintenanceMessage;
+        public final boolean adsEnabled;
+        public final long maxCacheSizeMb;
+        public final boolean onlineServicesEnabled;
+        public final boolean groupCallsEnabled;
+        public final boolean fileTransferEnabled;
+        public final boolean publicGroupsEnabled;
+        public final boolean everyoneGroupEnabled;
         public final boolean fromNetwork;
 
         public AppGateState(AccessDecision decision, long latestVersionCode,
                             String updateLink, String updateMessage, boolean fromNetwork) {
+            this(decision, latestVersionCode, BuildConfig.VERSION_NAME, updateLink, updateMessage,
+                    false, false, "", true, 500L, true, true, true, true, true, fromNetwork);
+        }
+
+        public AppGateState(AccessDecision decision, long latestVersionCode, String latestVersionName,
+                            String updateLink, String updateMessage, boolean forceUpdate,
+                            boolean maintenanceMode, String maintenanceMessage, boolean adsEnabled,
+                            long maxCacheSizeMb, boolean onlineServicesEnabled,
+                            boolean groupCallsEnabled, boolean fileTransferEnabled,
+                            boolean publicGroupsEnabled, boolean everyoneGroupEnabled,
+                            boolean fromNetwork) {
             this.decision = decision;
             this.latestVersionCode = latestVersionCode;
-            this.updateLink = updateLink;
-            this.updateMessage = updateMessage;
+            this.latestVersionName = latestVersionName != null ? latestVersionName : BuildConfig.VERSION_NAME;
+            this.updateLink = updateLink != null ? updateLink : "";
+            this.updateMessage = updateMessage != null ? updateMessage : "";
+            this.forceUpdate = forceUpdate;
+            this.maintenanceMode = maintenanceMode;
+            this.maintenanceMessage = maintenanceMessage != null ? maintenanceMessage : "";
+            this.adsEnabled = adsEnabled;
+            this.maxCacheSizeMb = maxCacheSizeMb;
+            this.onlineServicesEnabled = onlineServicesEnabled;
+            this.groupCallsEnabled = groupCallsEnabled;
+            this.fileTransferEnabled = fileTransferEnabled;
+            this.publicGroupsEnabled = publicGroupsEnabled;
+            this.everyoneGroupEnabled = everyoneGroupEnabled;
             this.fromNetwork = fromNetwork;
         }
 
         public boolean isBlocked() {
             return decision != AccessDecision.ALLOWED;
+        }
+
+        public boolean isOptionalUpdateAvailable(int currentVersionCode) {
+            return decision == AccessDecision.ALLOWED
+                    && latestVersionCode > currentVersionCode
+                    && !forceUpdate;
         }
     }
 
@@ -59,31 +99,62 @@ public class AppControlManager {
         if (snapshot == null) {
             return new AppGateState(AccessDecision.ALLOWED, currentVersionCode, "", "", false);
         }
-        // Kill switch has highest priority and disables all functionality immediately
         if (!snapshot.isAppEnabled) {
             return new AppGateState(
                     AccessDecision.BLOCKED_DISABLED,
                     snapshot.latestVersionCode,
+                    snapshot.latestVersionName,
                     snapshot.updateLink,
                     snapshot.updateMessage,
+                    snapshot.forceUpdate,
+                    snapshot.maintenanceMode,
+                    snapshot.maintenanceMessage,
+                    snapshot.adsEnabled,
+                    snapshot.maxCacheSizeMb,
+                    snapshot.onlineServicesEnabled,
+                    snapshot.groupCallsEnabled,
+                    snapshot.fileTransferEnabled,
+                    snapshot.publicGroupsEnabled,
+                    snapshot.everyoneGroupEnabled,
                     snapshot.fromNetwork
             );
         }
-        // Force update check when latest_version_code > local VERSION_CODE
-        if (snapshot.latestVersionCode > currentVersionCode) {
+        if (snapshot.forceUpdate && snapshot.latestVersionCode > currentVersionCode) {
             return new AppGateState(
                     AccessDecision.BLOCKED_FORCE_UPDATE,
                     snapshot.latestVersionCode,
+                    snapshot.latestVersionName,
                     snapshot.updateLink,
                     snapshot.updateMessage,
+                    true,
+                    snapshot.maintenanceMode,
+                    snapshot.maintenanceMessage,
+                    snapshot.adsEnabled,
+                    snapshot.maxCacheSizeMb,
+                    snapshot.onlineServicesEnabled,
+                    snapshot.groupCallsEnabled,
+                    snapshot.fileTransferEnabled,
+                    snapshot.publicGroupsEnabled,
+                    snapshot.everyoneGroupEnabled,
                     snapshot.fromNetwork
             );
         }
         return new AppGateState(
                 AccessDecision.ALLOWED,
                 snapshot.latestVersionCode,
+                snapshot.latestVersionName,
                 snapshot.updateLink,
                 snapshot.updateMessage,
+                snapshot.forceUpdate,
+                snapshot.maintenanceMode,
+                snapshot.maintenanceMessage,
+                snapshot.adsEnabled,
+                snapshot.maxCacheSizeMb,
+                snapshot.onlineServicesEnabled,
+                snapshot.groupCallsEnabled,
+                snapshot.fileTransferEnabled,
+                snapshot.publicGroupsEnabled,
+                snapshot.everyoneGroupEnabled,
                 snapshot.fromNetwork
         );
     }
@@ -91,6 +162,10 @@ public class AppControlManager {
     public AppGateState getCurrentGateState() {
         lastState = evaluate(remoteConfigManager.getCachedSnapshot(), BuildConfig.VERSION_CODE);
         return lastState;
+    }
+
+    public AppGateState getLastState() {
+        return lastState != null ? lastState : getCurrentGateState();
     }
 
     public void checkRemoteGate(GateCheckListener listener) {

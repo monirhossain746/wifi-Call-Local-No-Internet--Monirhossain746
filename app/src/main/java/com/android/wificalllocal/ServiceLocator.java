@@ -12,6 +12,7 @@ import com.android.wificalllocal.network.DiscoveryManager;
 import com.android.wificalllocal.network.LocalHttpServer;
 import com.android.wificalllocal.network.PeerConnectionManager;
 import com.android.wificalllocal.security.CryptoManager;
+import com.android.wificalllocal.storage.CacheManager;
 import com.android.wificalllocal.util.NotificationHelper;
 import com.android.wificalllocal.util.PreferencesManager;
 
@@ -34,6 +35,7 @@ public class ServiceLocator {
     private final DiscoveryManager discoveryManager;
     private final AdConsentManager adConsentManager;
     private final AppControlManager appControlManager;
+    private final CacheManager cacheManager;
     private LocalHttpServer localHttpServer;
 
     private ServiceLocator(Context context) {
@@ -48,6 +50,8 @@ public class ServiceLocator {
         this.discoveryManager = new DiscoveryManager(appContext, database, preferencesManager, peerConnectionManager);
         this.adConsentManager = new AdConsentManager();
         this.appControlManager = new AppControlManager(appContext);
+        this.cacheManager = new CacheManager(appContext, database);
+        this.peerConnectionManager.attachAppControlManager(this.appControlManager);
 
         seedEveryoneRoom();
     }
@@ -128,5 +132,6 @@ public class ServiceLocator {
     public DiscoveryManager getDiscoveryManager() { return discoveryManager; }
     public AdConsentManager getAdConsentManager() { return adConsentManager; }
     public AppControlManager getAppControlManager() { return appControlManager; }
+    public CacheManager getCacheManager() { return cacheManager; }
     public LocalHttpServer getLocalHttpServer() { return localHttpServer; }
 }

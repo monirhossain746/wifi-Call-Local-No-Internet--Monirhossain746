@@ -155,4 +155,17 @@ public class NetworkUtils {
             return false;
         }
     }
+
+    public static boolean hasNetworkConnectivity(Context context) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return false;
+            Network active = cm.getActiveNetwork();
+            if (active == null) return false;
+            NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+            return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }

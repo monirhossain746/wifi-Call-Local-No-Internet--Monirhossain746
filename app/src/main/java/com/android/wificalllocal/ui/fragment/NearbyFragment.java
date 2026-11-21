@@ -92,6 +92,11 @@ public class NearbyFragment extends Fragment {
                 viewModel.blockPeer(peer, true);
                 Toast.makeText(requireContext(), peer.name + " blocked", Toast.LENGTH_SHORT).show();
             }
+
+            @Override
+            public void onViewProfile(PeerEntity peer) {
+                ((MainActivity) requireActivity()).openPeerProfile(peer);
+            }
         });
 
         binding.nearbyPeersRecycler.setLayoutManager(new LinearLayoutManager(requireContext()));

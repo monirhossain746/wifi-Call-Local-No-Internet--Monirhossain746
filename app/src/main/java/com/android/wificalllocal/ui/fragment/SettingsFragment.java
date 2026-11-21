@@ -1,5 +1,6 @@
 package com.android.wificalllocal.ui.fragment;
 
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -21,6 +22,7 @@ import com.android.wificalllocal.BuildConfig;
 import com.android.wificalllocal.R;
 import com.android.wificalllocal.ServiceLocator;
 import com.android.wificalllocal.WifiCallLocalApp;
+import com.android.wificalllocal.ads.AdConsentManager;
 import com.android.wificalllocal.control.AppControlManager;
 import com.android.wificalllocal.control.RemoteConfigManager;
 import com.android.wificalllocal.control.UpdateManager;
@@ -28,6 +30,7 @@ import com.android.wificalllocal.data.local.entity.PeerEntity;
 import com.android.wificalllocal.data.local.entity.SavedContactEntity;
 import com.android.wificalllocal.databinding.FragmentSettingsBinding;
 import com.android.wificalllocal.network.NetworkUtils;
+import com.android.wificalllocal.storage.CacheManager;
 import com.android.wificalllocal.ui.MainActivity;
 import com.android.wificalllocal.ui.MainViewModel;
 import com.android.wificalllocal.util.AvatarLoader;
@@ -35,9 +38,13 @@ import com.android.wificalllocal.util.PreferencesManager;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import java.io.File;
+import java.text.DateFormat;
+import java.util.Date;
 import java.util.List;
 
 public class SettingsFragment extends Fragment {
+
+    public static final String GITHUB_REPO_URL = "https://github.com/monirhossain746/wifi-Call-Local-No-Internet-Monirhossain746";
 
     private FragmentSettingsBinding binding;
     private MainViewModel viewModel;
@@ -115,7 +122,49 @@ public class SettingsFragment extends Fragment {
         binding.btnThemeSelect.setText(getString(R.string.settings_theme) + ": " + formatTheme(prefs.getThemeMode()));
         binding.btnLanguageSelect.setText(getString(R.string.settings_language) + ": " + formatLanguage(prefs.getLanguage()));
 
-        refreshUpdateCardUi(remoteConfigManager.getCachedSnapshot(), false);
+        RemoteConfigManager.ConfigSnapshot snap = remoteConfigManager.getCachedSnapshot();
+        refreshUpdateCardUi(snap, false);
+        refreshStorageAndDiagnosticsUi(snap, info);
+    }
+
+    private void refreshStorageAndDiagnosticsUi(RemoteConfigManager.ConfigSnapshot snap, NetworkUtils.LocalNetworkInfo net) {
+        if (binding == null) return;
+        long maxMb = snap != null ? snap.maxCacheSizeMb : CacheManager.DEFAULT_MAX_CACHE_MB;
+        binding.settingsMaxCache.setText(getString(R.string.settings_max_cache_format, maxMb));
+        binding.settingsCurrentCache.setText(getString(R.string.settings_current_cache_format, "Calculating…"));
+        locator.getCacheManager().getCacheStatsAsync(maxMb, stats -> {
+            if (!isAdded() || binding == null || stats == null) return;
+            binding.settingsCurrentCache.setText(getString(
+                    R.string.settings_current_cache_format,
+                    CacheManager.formatSizeMb(stats.totalBytes)));
+        });
+
+        long lastFetch = remoteConfigManager.getLastSuccessfulFetchMs();
+        String fetchTime = lastFetch > 0
+                ? DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(lastFetch))
+                : "Never synced";
+        String rcState = (snap != null && !snap.isAppEnabled)
+                ? "Disabled (Kill Switch)"
+                : ((snap != null && snap.maintenanceMode) ? "Maintenance Mode" : "Normal");
+        binding.settingsFirebaseStatus.setText(
+                "Project: wifi-call-local-1\n"
+                        + "SDK Init: " + remoteConfigManager.getFirebaseInitStatusLabel() + "\n"
+                        + "Remote Config: " + remoteConfigManager.getRemoteConfigStatusLabel() + "\n"
+                        + "App Control: " + rcState + " • Last sync: " + fetchTime);
+
+        AdConsentManager adMgr = locator.getAdConsentManager();
+        binding.settingsAdmobStatus.setText(
+                "SDK Init: " + adMgr.getInitStatus() + "\n"
+                        + "Banner: " + adMgr.getBannerStatus() + "\n"
+                        + "Availability: " + adMgr.getAvailabilityStatus());
+
+        boolean hasNet = NetworkUtils.hasInternetConnection(requireContext());
+        String wifiLine = net != null && net.isValid()
+                ? ("Local WiFi Ready (" + net.ipAddress + ":" + prefs.getServerPort() + " • " + net.routeType + ")")
+                : "No Local WiFi/Hotspot detected";
+        binding.settingsCommStatus.setText(
+                wifiLine + "\n"
+                        + "Internet: " + (hasNet ? "Connected (Remote Config/Ads enabled)" : "Offline (Local P2P & Web active)"));
     }
 
     private void refreshStatusChips(String status) {
@@ -168,8 +217,10 @@ public class SettingsFragment extends Fragment {
         binding.btnSavedContacts.setOnClickListener(v -> showSavedContactsDialog());
         binding.btnBatteryOpt.setOnClickListener(v -> showBatteryOptimizationDialog());
         binding.btnPrivacyTrust.setOnClickListener(v -> showPrivacyDialog());
+        binding.btnClearAllCache.setOnClickListener(v -> confirmAndClearCache());
         binding.btnCheckUpdate.setOnClickListener(v -> performCheckUpdate(false));
         binding.btnUpdateNow.setOnClickListener(v -> handleUpdateNowClicked());
+        binding.btnManualUpdate.setOnClickListener(v -> openManualUpdateGitHub());
         binding.btnAboutDeveloper.setOnClickListener(v -> ((MainActivity) requireActivity()).openAboutDeveloper());
     }
 
@@ -416,6 +467,7 @@ public class SettingsFragment extends Fragment {
         ));
         binding.settingsLatestVersion.setText(getString(
                 R.string.settings_latest_version_format,
+                effective.latestVersionName,
                 effective.latestVersionCode
         ));
 
@@ -436,6 +488,50 @@ public class SettingsFragment extends Fragment {
         }
     }
 
+    private void confirmAndClearCache() {
+        RemoteConfigManager.ConfigSnapshot snap = remoteConfigManager != null
+                ? remoteConfigManager.getCachedSnapshot()
+                : null;
+        long maxMb = snap != null ? snap.maxCacheSizeMb : CacheManager.DEFAULT_MAX_CACHE_MB;
+
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle(R.string.clear_cache_confirm_title)
+                .setMessage(R.string.clear_cache_confirm_message)
+                .setPositiveButton(R.string.btn_clear_all_cache, (d, w) -> {
+                    if (binding != null) binding.btnClearAllCache.setEnabled(false);
+                    locator.getCacheManager().clearAllCacheAsync(maxMb, result -> {
+                        if (!isAdded() || binding == null) return;
+                        binding.btnClearAllCache.setEnabled(true);
+                        refreshStorageAndDiagnosticsUi(snap, NetworkUtils.detectLocalNetwork(requireContext()));
+                        Toast.makeText(
+                                requireContext(),
+                                getString(R.string.clear_cache_done_format, CacheManager.formatSizeMb(result.freedBytes)),
+                                Toast.LENGTH_LONG
+                        ).show();
+                    });
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    private void openManualUpdateGitHub() {
+        Uri repoUri = Uri.parse(GITHUB_REPO_URL);
+        Toast.makeText(requireContext(), "Opening official GitHub repository…", Toast.LENGTH_SHORT).show();
+        Intent githubIntent = new Intent(Intent.ACTION_VIEW, repoUri);
+        githubIntent.setPackage("com.github.android");
+        try {
+            startActivity(githubIntent);
+            return;
+        } catch (ActivityNotFoundException ignored) {
+        }
+        Intent browserIntent = new Intent(Intent.ACTION_VIEW, repoUri);
+        try {
+            startActivity(browserIntent);
+        } catch (Exception e) {
+            Toast.makeText(requireContext(), R.string.error_no_browser_github, Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void performCheckUpdate(boolean startInstallIfAvailable) {
         if (binding == null || remoteConfigManager == null) return;
         binding.btnCheckUpdate.setEnabled(false);
@@ -452,6 +548,7 @@ public class SettingsFragment extends Fragment {
             }
 
             refreshUpdateCardUi(snapshot, true);
+            refreshStorageAndDiagnosticsUi(snapshot, NetworkUtils.detectLocalNetwork(requireContext()));
             if (startInstallIfAvailable) {
                 if (snapshot != null && snapshot.latestVersionCode > BuildConfig.VERSION_CODE) {
                     startApkUpdate(snapshot.updateLink);

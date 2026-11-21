@@ -5,16 +5,20 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 
+import com.android.wificalllocal.ServiceLocator;
+import com.android.wificalllocal.control.AppControlManager;
 import com.android.wificalllocal.data.local.AppDatabase;
 import com.android.wificalllocal.data.local.entity.CallLogEntity;
 import com.android.wificalllocal.data.local.entity.FileTransferEntity;
 import com.android.wificalllocal.data.local.entity.GroupEntity;
+import com.android.wificalllocal.data.local.entity.GroupMemberEntity;
 import com.android.wificalllocal.data.local.entity.MessageEntity;
 import com.android.wificalllocal.data.local.entity.PeerEntity;
 import com.android.wificalllocal.data.local.entity.UserProfileEntity;
 import com.android.wificalllocal.files.FileTransferManager;
 import com.android.wificalllocal.network.model.NetPacket;
 import com.android.wificalllocal.security.CryptoManager;
+import com.android.wificalllocal.storage.CacheManager;
 import com.google.gson.Gson;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.common.BitMatrix;
@@ -40,6 +44,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import fi.iki.elonen.NanoWSD;
 
 public class LocalHttpServer extends NanoWSD {
+
+    private static final long MAX_WEB_UPLOAD_BYTES = 100L * 1024L * 1024L;
 
     private final Context context;
     private final AppDatabase db;
@@ -85,6 +91,22 @@ public class LocalHttpServer extends NanoWSD {
         broadcastToWebClientsExcept(jsonPayload, null);
     }
 
+    public void broadcastPersonalizedSnapshots() {
+        for (PeerServerSocket ws : activeWebSockets) {
+            try {
+                if (ws.isOpen()) {
+                    Map<String, Object> snap = buildInfoSnapshot(ws.remotePeerId);
+                    snap.put("version", 1);
+                    snap.put("type", "WEB_SNAPSHOT");
+                    snap.put("event", "WEB_SNAPSHOT");
+                    snap.put("timestamp", System.currentTimeMillis());
+                    ws.send(gson.toJson(snap));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public void broadcastToWebClientsExcept(String jsonPayload, String excludePeerId) {
         for (PeerServerSocket ws : activeWebSockets) {
             try {
@@ -97,6 +119,30 @@ public class LocalHttpServer extends NanoWSD {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    public int broadcastToWebClientsExcluding(String jsonPayload, java.util.Set<String> excludePeerIds) {
+        int count = 0;
+        for (PeerServerSocket ws : activeWebSockets) {
+            try {
+                if (ws.isOpen()) {
+                    if (excludePeerIds != null && ws.remotePeerId != null && excludePeerIds.contains(ws.remotePeerId)) {
+                        continue;
+                    }
+                    ws.send(jsonPayload);
+                    count++;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return count;
+    }
+
+    private String jsonError(String error) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("ok", false);
+        err.put("error", error != null ? error : "Request failed");
+        return gson.toJson(err);
     }
 
     public boolean sendToWebClient(String peerId, String jsonPayload) {
@@ -147,6 +193,8 @@ public class LocalHttpServer extends NanoWSD {
                 return handleApiInfo(session);
             } else if ("/api/web/join".equals(uri) && Method.POST.equals(method)) {
                 return handleWebJoin(session);
+            } else if ("/api/group/auth".equals(uri) && Method.POST.equals(method)) {
+                return handleGroupAuth(session);
             } else if ("/api/chunk".equals(uri) && Method.GET.equals(method)) {
                 return handleGetChunk(session);
             } else if ("/api/manifest".equals(uri) && Method.GET.equals(method)) {
@@ -213,12 +261,46 @@ public class LocalHttpServer extends NanoWSD {
             }
         }
 
-        List<GroupEntity> publicGroups = db.groupDao().getPublicGroupsSync();
+        AppControlManager.AppGateState gate = peerManager.getGateState();
+        boolean groupCallsEnabled = gate == null || gate.groupCallsEnabled;
+        boolean fileTransferEnabled = gate == null || gate.fileTransferEnabled;
+        boolean publicGroupsEnabled = gate == null || gate.publicGroupsEnabled;
+        boolean everyoneGroupEnabled = gate == null || gate.everyoneGroupEnabled;
+
+        List<GroupEntity> allGroups = db.groupDao().getAllGroupsSync();
+        List<Map<String, Object>> safeGroups = new ArrayList<>();
         List<MessageEntity> collectedMsgs = new ArrayList<>();
-        for (GroupEntity g : publicGroups) {
-            List<MessageEntity> gm = db.messageDao().getMessagesForChatSync(g.groupId);
-            if (gm != null) collectedMsgs.addAll(gm);
+        if (allGroups != null) {
+            for (GroupEntity g : allGroups) {
+                boolean isEveryone = AppDatabase.EVERYONE_ROOM_ID.equals(g.groupId);
+                if (isEveryone && !everyoneGroupEnabled) continue;
+                if (!isEveryone && !g.isPrivate && !publicGroupsEnabled) continue;
+
+                boolean authorized = peerManager.isPeerAuthorizedForGroup(g, requesterPeerId);
+                Map<String, Object> gm = new HashMap<>();
+                gm.put("groupId", g.groupId);
+                gm.put("name", g.name);
+                gm.put("description", g.description != null ? g.description : "");
+                gm.put("isPrivate", g.isPrivate);
+                gm.put("ownerId", g.ownerId);
+                gm.put("creatorName", g.creatorName != null ? g.creatorName : "");
+                gm.put("adminsOnlySend", g.adminsOnlySend);
+                gm.put("isJoined", authorized && (!g.isPrivate || (requesterPeerId != null && !requesterPeerId.isEmpty())));
+                gm.put("authorized", authorized);
+                gm.put("memberCount", g.memberCount);
+                gm.put("onlineCount", g.onlineCount);
+                gm.put("updatedAt", g.updatedAt);
+                // Strip pinHash, pinSalt, and encryptionKeySalt completely from HTTP/WS snapshots
+                if (authorized) {
+                    List<GroupMemberEntity> members = db.groupDao().getMembersSync(g.groupId);
+                    gm.put("members", members != null ? members : Collections.emptyList());
+                    List<MessageEntity> msgs = db.messageDao().getMessagesForChatSync(g.groupId);
+                    if (msgs != null) collectedMsgs.addAll(msgs);
+                }
+                safeGroups.add(gm);
+            }
         }
+
         if (requesterPeerId != null && !requesterPeerId.isEmpty()) {
             for (PeerEntity p : peers) {
                 if (!requesterPeerId.equals(p.deviceId)) {
@@ -230,15 +312,23 @@ public class LocalHttpServer extends NanoWSD {
         }
         List<CallLogEntity> callLogs = db.callLogDao().getRecentSync(30);
 
+        Map<String, Object> featureFlags = new HashMap<>();
+        featureFlags.put("groupCallsEnabled", groupCallsEnabled);
+        featureFlags.put("fileTransferEnabled", fileTransferEnabled);
+        featureFlags.put("publicGroupsEnabled", publicGroupsEnabled);
+        featureFlags.put("everyoneGroupEnabled", everyoneGroupEnabled);
+
         Map<String, Object> payload = new HashMap<>();
         payload.put("hostName", me != null ? me.name : "Wifi Call Local");
         payload.put("deviceId", me != null ? me.deviceId : "");
         payload.put("ip", net.ipAddress);
         payload.put("port", getListeningPort());
         payload.put("peers", peers);
-        payload.put("groups", publicGroups);
+        payload.put("groups", safeGroups);
         payload.put("messages", collectedMsgs);
         payload.put("callLogs", callLogs);
+        payload.put("activeGroupCalls", peerManager.getActiveGroupCallsSnapshotForPeer(requesterPeerId));
+        payload.put("featureFlags", featureFlags);
         return payload;
     }
 
@@ -266,6 +356,59 @@ public class LocalHttpServer extends NanoWSD {
         PeerEntity webPeer = new PeerEntity(id, name, "Browser Participant", remoteIp, getListeningPort(),
                 "WEB", "ONLINE", true, false, false, true, "", now, now);
         db.peerDao().upsert(webPeer);
+        peerManager.broadcastWebSnapshotToAll();
+        return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
+    }
+
+    private Response handleGroupAuth(IHTTPSession session) throws Exception {
+        Map<String, String> files = new HashMap<>();
+        session.parseBody(files);
+        String body = files.get("postData");
+        Map<?, ?> req = gson.fromJson(body, Map.class);
+        if (req == null || req.get("groupId") == null || req.get("deviceId") == null || req.get("pin") == null) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                    "{\"ok\":false,\"error\":\"Missing groupId, deviceId, or pin\"}");
+        }
+        String groupId = String.valueOf(req.get("groupId"));
+        String deviceId = String.valueOf(req.get("deviceId"));
+        String displayName = req.get("name") != null ? String.valueOf(req.get("name")).trim() : "Web User";
+        String pin = String.valueOf(req.get("pin")).trim();
+
+        GroupEntity group = db.groupDao().getGroupSync(groupId);
+        if (group == null) {
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, "application/json",
+                    "{\"ok\":false,\"error\":\"Group not found\"}");
+        }
+        CryptoManager crypto = ServiceLocator.getInstance(context).getCryptoManager();
+        String rateKey = "web:" + groupId + ":" + deviceId;
+        long locked = crypto.getRemainingLockoutSeconds(rateKey);
+        if (locked > 0) {
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "application/json",
+                    jsonError("Locked for " + locked + "s"));
+        }
+
+        boolean ok;
+        if (!group.isPrivate) {
+            ok = true;
+        } else {
+            ok = crypto.verifyPin(pin, group.pinSalt, group.pinHash);
+        }
+
+        if (!ok) {
+            long lock = crypto.recordFailedAttempt(rateKey);
+            String msg = lock > 0 ? ("Locked for " + lock + "s") : "Invalid PIN";
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "application/json",
+                    jsonError(msg));
+        }
+
+        crypto.resetAttempts(rateKey);
+        db.groupDao().upsertMember(new GroupMemberEntity(
+                groupId, deviceId, displayName, "MEMBER", true, System.currentTimeMillis()
+        ));
+        group.memberCount = Math.max(group.memberCount, db.groupDao().getMembersSync(groupId).size());
+        group.updatedAt = System.currentTimeMillis();
+        db.groupDao().upsertGroup(group);
+        peerManager.syncGroupMetadata(group);
         peerManager.broadcastWebSnapshotToAll();
         return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
     }
@@ -364,6 +507,11 @@ public class LocalHttpServer extends NanoWSD {
     }
 
     private Response handleWebUpload(IHTTPSession session) throws Exception {
+        AppControlManager.AppGateState gate = peerManager.getGateState();
+        if (gate != null && !gate.fileTransferEnabled) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json",
+                    "{\"error\":\"File transfers are currently disabled via Remote Config\"}");
+        }
         Map<String, String> files = new HashMap<>();
         session.parseBody(files);
         String tempPath = files.get("file");
@@ -380,6 +528,17 @@ public class LocalHttpServer extends NanoWSD {
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json", "{\"error\":\"No file\"}");
         }
         File uploaded = new File(tempPath);
+        if (uploaded.length() > MAX_WEB_UPLOAD_BYTES) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                    "{\"error\":\"File exceeds 100 MB web upload limit\"}");
+        }
+        if (!chatId.startsWith("dm:")) {
+            GroupEntity g = db.groupDao().getGroupSync(chatId);
+            if (g != null && !peerManager.isPeerAuthorizedForGroup(g, senderId)) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json",
+                        "{\"error\":\"Not authorized for private group\"}");
+            }
+        }
         String transferId = UUID.randomUUID().toString();
         String messageId = UUID.randomUUID().toString();
         File cacheDir = fileTransferManager.getChunkCacheDir(transferId);
@@ -439,6 +598,9 @@ public class LocalHttpServer extends NanoWSD {
         db.fileTransferDao().upsert(ft);
 
         peerManager.publishWebFileMessage(chatId, targetId, senderId, senderName, messageId, manifest);
+        CacheManager cm = ServiceLocator.getInstance(context).getCacheManager();
+        long maxMb = gate != null ? gate.maxCacheSizeMb : CacheManager.DEFAULT_MAX_CACHE_MB;
+        cm.enforceCacheLimitAsync(maxMb);
         return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
     }
 
